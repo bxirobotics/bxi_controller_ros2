@@ -197,7 +197,7 @@ def generate_launch_description(
             ),
             DeclareLaunchArgument(
                 "duration_sec",
-                default_value="60.0",
+                default_value="300.0",
                 description="Hardware test duration",
             ),
             DeclareLaunchArgument(
