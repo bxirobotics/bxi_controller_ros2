@@ -446,7 +446,12 @@ class _HistoryMotionPolicy(_MotionGeometry, JointPolicy):
         dt: float,
         *,
         advance: bool = True,
+        advance_motion: bool | None = None,
     ) -> PolicyOutput:
+        """Infer while optionally freezing only the motion reference cursor."""
+
+        if advance_motion is None:
+            advance_motion = advance
         alignment_samples = self._alignment_samples
         if not advance and alignment_samples:
             np.copyto(self._alignment_checkpoint, self.init_to_world)
@@ -479,9 +484,9 @@ class _HistoryMotionPolicy(_MotionGeometry, JointPolicy):
                 self._scaled_action,
                 out=self._target,
             )
-        if advance:
+        if advance_motion:
             self.advance(dt)
-        else:
+        elif not advance:
             self._alignment_samples = alignment_samples
             if alignment_samples:
                 np.copyto(self.init_to_world, self._alignment_checkpoint)

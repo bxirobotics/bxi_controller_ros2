@@ -52,11 +52,22 @@ class DanceState(RobotControlState, EntryFrameProvider, RunningFrameProvider):
         policy = self.policy
         if policy.finished():
             return None
-        output = policy.step(
-            ctx.inference_frame,
-            dt,
-            advance=self.playing and advance,
-        )
+        if advance:
+            # Keep RGMT's proprioceptive and previous-action histories alive
+            # while a user pause freezes only the replay reference cursor.
+            output = policy.step(
+                ctx.inference_frame,
+                dt,
+                advance=True,
+                advance_motion=self.playing,
+            )
+        else:
+            output = policy.step(
+                ctx.inference_frame,
+                dt,
+                advance=False,
+                advance_motion=False,
+            )
         return self._motor_frame_from_target(ctx, output.joints)
 
     def on_update(self, ctx: RobotControlContext, dt: float) -> None:
@@ -82,4 +93,8 @@ class DanceState(RobotControlState, EntryFrameProvider, RunningFrameProvider):
         if action_name != "toggle_pause":
             return False
         self.playing = not self.playing
+        self.logger.info(
+            "舞蹈参考已%s；策略传感器与动作历史继续更新"
+            % ("继续播放" if self.playing else "暂停，RGMT继续保持支撑")
+        )
         return True
