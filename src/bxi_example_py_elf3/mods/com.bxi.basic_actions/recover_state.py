@@ -3,7 +3,9 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING
 
-from bxi_example_py_elf3.policies import DanceMotionPolicyMjlab
+from bxi_example_py_elf3.policies import (
+    DanceMotionPolicyGravityIsaaclabV3,
+)
 from bxi_example_py_elf3.framework.mod_api import ResourceHandle
 from bxi_example_py_elf3.framework.mod_api import RobotControlState
 from bxi_example_py_elf3.framework.mod_api import StateBehavior
@@ -20,17 +22,27 @@ if TYPE_CHECKING:
 
 class RecoverState(RobotControlState, EntryFrameProvider, RunningFrameProvider):
     def __init__(
-        self, name: str, state_id: int, policy: ResourceHandle[DanceMotionPolicyMjlab]
+        self,
+        name: str,
+        state_id: int,
+        policy: ResourceHandle[DanceMotionPolicyGravityIsaaclabV3],
+        face_policy: ResourceHandle[DanceMotionPolicyGravityIsaaclabV3],
     ) -> None:
-        super().__init__(name, state_id, resources=(policy,))
+        super().__init__(name, state_id, resources=(policy, face_policy))
         self._policy = policy
+        self._face_policy = face_policy
+        self._active_policy: DanceMotionPolicyGravityIsaaclabV3 | None = None
         self.playing = True
         self.motion_selected = False
         self.end_frame_trim = 0
 
     @property
-    def policy(self) -> DanceMotionPolicyMjlab:
-        return self._policy.get()
+    def policy(
+        self,
+    ) -> DanceMotionPolicyGravityIsaaclabV3:
+        if self._active_policy is None:
+            raise RuntimeError("recover policy has not been selected")
+        return self._active_policy
 
     def on_prepare(
         self, ctx: RobotControlContext, from_state: StateBehavior[RobotControlContext]
@@ -51,10 +63,12 @@ class RecoverState(RobotControlState, EntryFrameProvider, RunningFrameProvider):
         angles = quaternion_to_euler_array(ctx.current_quat_xyzw)
         angles[angles > math.pi] -= 2 * math.pi
         if angles[1] < -(math.pi / 4.0):
-            self.policy.configure_range(start_frame=600, end_frame=880)
+            self._active_policy = self._face_policy.get()
+            self._active_policy.configure_range(start_frame=0, end_frame=355)
             self.end_frame_trim = 20
         elif angles[1] > (math.pi / 4.0):
-            self.policy.configure_range(start_frame=1350, end_frame=1690)
+            self._active_policy = self._policy.get()
+            self._active_policy.configure_range(start_frame=0, end_frame=295)
             self.end_frame_trim = 0
         else:
             self.motion_selected = False
