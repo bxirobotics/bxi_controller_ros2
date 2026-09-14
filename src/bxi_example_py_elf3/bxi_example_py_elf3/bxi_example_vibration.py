@@ -24,6 +24,7 @@ from .control.elf3 import (
     JOINT_NOMINAL_POS,
     JOINT_POSITION_MAX,
     JOINT_POSITION_MIN,
+    JOINT_VIBRATION_SIGNS,
     ROBOT_NAME,
 )
 from .control.remote import RemoteButtonEdge
@@ -239,6 +240,9 @@ class VibrationTestNode(Node):
                 [JOINT_NAMES.index(self.joint_name)], dtype=np.int64
             )
             self.active_joint_names = (self.joint_name,)
+        self.active_vibration_signs = JOINT_VIBRATION_SIGNS[
+            self.active_joint_indices
+        ]
 
         qos = QoSProfile(
             depth=1,
@@ -1040,7 +1044,9 @@ class VibrationTestNode(Node):
                 else:
                     frequency, phase = self._frequency_and_phase(elapsed)
                     command[self.active_joint_indices] += (
-                        self.amplitude_rad * math.sin(phase)
+                        self.active_vibration_signs
+                        * self.amplitude_rad
+                        * math.sin(phase)
                     )
                     np.clip(
                         command,

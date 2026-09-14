@@ -43,6 +43,23 @@ JOINT_NAMES = (
 
 DOF_NUM = len(JOINT_NAMES)
 
+# Sign used by the bilateral vibration test.  Signs are defined in joint
+# coordinates so the resulting link motion is mirrored across the robot's
+# sagittal plane: Y-axis pitch joints move with the same sign on both sides,
+# while X/Z-axis roll/yaw joints use the opposite sign.  Waist joints are not
+# bilateral and keep the original sign, except waist_x_joint which is
+# intentionally held at its center during the vibration phase.
+JOINT_VIBRATION_SIGNS = np.array(
+    [
+        1.0, 0.0, 1.0,
+        1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+        1.0, -1.0, -1.0, 1.0, 1.0, -1.0,
+        1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+        1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0,
+    ],
+    dtype=np.float64,
+)
+
 JOINT_KP = np.array(
     [
         108.448, 162.672, 176.421,
