@@ -91,12 +91,16 @@ states:
       priority: 990
       group: Base
       icon: do_not_disturb_on
+      confirm: true
+      confirm_message: 所有电机进入零力矩模式，机器人将完全失去支撑能力，请确保机器人处于安全状态
   pd_brake:
     manifest:
       label: 初始姿态
       priority: 980
       group: Base
       icon: settings_backup_restore
+      confirm: true
+      confirm_message: 机器人将进入初始姿态，所有电机进入PD制动模式，失去支撑能力，请确保机器人处于安全状态
   initial_pos:
     manifest:
       label: 零位模式
@@ -282,6 +286,8 @@ actions:
     manifest:
       label: 暂停/继续
       ui: pause
+      confirm: true
+      confirm_message: 确保机器人姿势安全后再继续播放舞蹈动作
   - from: applause
     event: toggle_pause
     action: toggle_pause
