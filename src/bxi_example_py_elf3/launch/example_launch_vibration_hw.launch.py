@@ -140,10 +140,10 @@ def generate_launch_description(
                 "max_command_gap_sec": ParameterValue(
                     max_command_gap_sec, value_type=float
                 ),
-                "hardware_max_amplitude_rad": 100000.0,
-                "hardware_max_frequency_hz": 100000.0,
-                "hardware_max_velocity_rad_s": 100000.0,
-                "hardware_max_acceleration_rad_s2": 100000.0,
+                "hardware_max_amplitude_rad": 0.08,
+                "hardware_max_frequency_hz": 4.0,
+                "hardware_max_velocity_rad_s": 1.0,
+                "hardware_max_acceleration_rad_s2": 25.0,
                 "hardware_max_control_rate_hz": 500.0,
                 "hardware_max_joint_test_amplitude_rad": 0.1,
                 "hardware_joint_test_min_move_sec": 0.2,
@@ -182,17 +182,17 @@ def generate_launch_description(
             ),
             DeclareLaunchArgument(
                 "amplitude_rad",
-                default_value="0.23",
+                default_value="0.05",
                 description="Peak hardware position amplitude in radians",
             ),
             DeclareLaunchArgument(
                 "start_frequency_hz",
-                default_value="10.0",
+                default_value="1.0",
                 description="Hardware sweep start frequency",
             ),
             DeclareLaunchArgument(
                 "end_frequency_hz",
-                default_value="20.0",
+                default_value="3.0",
                 description="Hardware sweep end frequency",
             ),
             DeclareLaunchArgument(
