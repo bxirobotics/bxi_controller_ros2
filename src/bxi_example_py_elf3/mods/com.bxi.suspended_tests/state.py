@@ -81,6 +81,12 @@ class SuspendedVibrationState(ButtonControlState):
                     "to stop it first"
                 )
                 return
+            if node.run_enabled:
+                node.get_logger().warning(
+                    "Y rejected while the running test is active; press X "
+                    "to stop it first"
+                )
+                return
             if node.joint_test_running:
                 node._cancel_joint_rotation_test(self.source)
                 return
