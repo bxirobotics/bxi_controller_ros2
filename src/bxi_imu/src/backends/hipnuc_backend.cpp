@@ -222,6 +222,17 @@ int HipnucBackend::open_serial_port()
     return -1;
   }
 
+  // Claim the tty at the kernel level so later open attempts are rejected.
+  // The launch owner selection disables hardware_elf3 before this process
+  // starts; TIOCEXCL also protects against a second bxi_imu instance.
+  if (ioctl(serial, TIOCEXCL) != 0) {
+    RCLCPP_ERROR(
+      logger_, "cannot exclusively claim %s: %s (another process may be using the IMU)",
+      port_.c_str(), std::strerror(errno));
+    ::close(serial);
+    return -1;
+  }
+
   struct termios2 settings {};
   if (ioctl(serial, TCGETS2, &settings) != 0) {
     RCLCPP_ERROR(logger_, "TCGETS2(%s) failed: %s", port_.c_str(), std::strerror(errno));

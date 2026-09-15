@@ -3,7 +3,9 @@ imu_node:
     # Select the protocol adapter. New hardware is added as another backend
     # and registered in src/backend_factory.cpp.
     driver: hipnuc
-    port: /dev/ttyIMU_2
+    # Keep the legacy HiPNUC device alias for compatibility with the old
+    # hardware IMU configuration.
+    port: /dev/ttyIMU
     baudrate: 921600
 
     # Common ROS output contract consumed by the robot controller.

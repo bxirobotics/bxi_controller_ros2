@@ -29,7 +29,7 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("driver", default_value="hipnuc"),
-            DeclareLaunchArgument("port", default_value="/dev/ttyIMU_2"),
+            DeclareLaunchArgument("port", default_value="/dev/ttyIMU"),
             DeclareLaunchArgument("baudrate", default_value="921600"),
             Node(
                 package="bxi_imu",

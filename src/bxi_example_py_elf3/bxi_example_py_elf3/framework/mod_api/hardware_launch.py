@@ -29,23 +29,37 @@ def declare_hardware_launch_arguments() -> list[Any]:
             default_value="auto",
             description="Use true/false to override modules.head.enabled, or auto.",
         ),
+        DeclareLaunchArgument(
+            "enable_imu",
+            default_value="auto",
+            description="Enable the hardware IMU reader, or auto-read hardware_config/imu.",
+        ),
     ]
 
 
 def hardware_node_from_context(context) -> Any:
     from launch.substitutions import LaunchConfiguration
     from launch_ros.actions import Node
+    from ament_index_python.packages import get_package_prefix
 
     config_file = LaunchConfiguration("robot_config_file").perform(context)
     enable_head_arg = LaunchConfiguration("enable_head").perform(context)
+    enable_imu_arg = LaunchConfiguration("enable_imu").perform(context)
     robot_config = _load_robot_config(config_file)
     enable_head = _resolve_enable_head(enable_head_arg, robot_config)
-    hardware_config = _resolve_hardware_config(robot_config, enable_head)
+    enable_imu = _resolve_enable_imu(enable_imu_arg, robot_config)
+    hardware_config = _resolve_hardware_config(robot_config, enable_head, enable_imu)
     package_name = "hardware_elf3"
+    package_prefix = get_package_prefix(package_name)
+    executable_path = os.path.join(package_prefix, "lib", package_name, package_name)
 
     print(
         "[bxi hardware config] "
         f"package={package_name}, "
+        f"package_prefix={package_prefix}, "
+        f"executable={executable_path}, "
+        f"imu={'enabled' if enable_imu else 'disabled'}, "
+        "imu_port=/dev/ttyIMU, "
         f"motor_disable=0x{hardware_config['hardware_config/motor_disable']:08X}, "
         f"config_file={config_file or '<none>'}"
     )
@@ -123,9 +137,13 @@ def _head_enabled_from_config(robot_config: dict[str, Any]) -> bool | None:
 def _resolve_hardware_config(
     robot_config: dict[str, Any],
     enable_head: bool,
+    enable_imu: bool,
 ) -> dict[str, Any]:
     hardware_config = dict(DEFAULT_HARDWARE_CONFIG)
     hardware_config.update(_hardware_config_from_robot_config(robot_config))
+    # The launch argument is the final authority. This prevents the robot
+    # config file's default from silently re-enabling a competing IMU reader.
+    hardware_config["hardware_config/imu"] = enable_imu
 
     motor_disable = int(hardware_config["hardware_config/motor_disable"])
     if enable_head:
@@ -134,6 +152,35 @@ def _resolve_hardware_config(
         motor_disable |= HEAD_MOTOR_DISABLE_MASK
     hardware_config["hardware_config/motor_disable"] = motor_disable
     return hardware_config
+
+
+def _resolve_enable_imu(enable_imu_arg: str, robot_config: dict[str, Any]) -> bool:
+    mode = str(enable_imu_arg or "true").strip().lower()
+    if mode == "auto":
+        configured = _imu_enabled_from_config(robot_config)
+        return bool(configured) if configured is not None else True
+
+    parsed = _parse_bool(mode)
+    if parsed is None:
+        print(
+            f"[bxi hardware config] invalid enable_imu={enable_imu_arg!r}, "
+            "using true."
+        )
+        return True
+    return parsed
+
+
+def _imu_enabled_from_config(robot_config: dict[str, Any]) -> bool | None:
+    hardware_config = robot_config.get("hardware_config", {})
+    if not isinstance(hardware_config, dict):
+        return None
+    value = hardware_config.get("imu")
+    if value is None:
+        value = hardware_config.get("hardware_config/imu")
+    if value is None:
+        return None
+    parsed = _parse_bool(value)
+    return parsed if parsed is not None else bool(value)
 
 
 def _hardware_config_from_robot_config(robot_config: dict[str, Any]) -> dict[str, Any]:

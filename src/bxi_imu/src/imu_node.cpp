@@ -31,7 +31,7 @@ public:
   : Node("imu_node", options)
   {
     driver_ = declare_parameter<std::string>("driver", "hipnuc");
-    port_ = declare_parameter<std::string>("port", "/dev/ttyIMU_2");
+    port_ = declare_parameter<std::string>("port", "/dev/ttyIMU");
     baudrate_ = declare_parameter<int>("baudrate", 921600);
     frame_id_ = declare_parameter<std::string>("frame_id", "imu_link");
     imu_topic_ = declare_parameter<std::string>("imu_topic", "/hardware/imu_data");

@@ -19,8 +19,20 @@ The default configuration uses the HiPNUC adapter and publishes:
 The adapter can be selected without changing the launch file:
 
 ```bash
-ros2 launch bxi_imu imu.launch.py driver:=hipnuc port:=/dev/ttyIMU_2 baudrate:=921600
+ros2 launch bxi_imu imu.launch.py driver:=hipnuc port:=/dev/ttyIMU baudrate:=921600
 ```
+
+When this driver is used together with the robot hardware launch, disable the
+legacy hardware IMU reader so only one process opens the HiPNUC serial device:
+
+```bash
+ros2 launch bxi_example_py_elf3 example_demo_hw.launch.py enable_imu:=false
+ros2 launch bxi_imu imu.launch.py driver:=hipnuc port:=/dev/ttyIMU
+```
+
+The legacy hardware reader remains enabled by default for backward
+compatibility. The controller's `start` action passes `enable_imu:=false`
+automatically before starting this package.
 
 ## Adding another IMU
 

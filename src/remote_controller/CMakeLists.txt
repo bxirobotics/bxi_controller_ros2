@@ -102,6 +102,9 @@ install(DIRECTORY launch
 install(DIRECTORY config
          DESTINATION share/${PROJECT_NAME})
 
+install(PROGRAMS scripts/start_imu_if_owned.sh
+        DESTINATION share/${PROJECT_NAME}/scripts)
+
 ament_export_include_directories(include)
 ament_export_libraries(${PROJECT_NAME}_core)
 ament_export_targets(${PROJECT_NAME}_targets)
