@@ -121,6 +121,11 @@ class BxiExample(Node):
         self.linear_acceleration = np.zeros(3, dtype=np.double)
         self.quat_xyzw = np.zeros(4, dtype=np.double)
         self.quat_wxyz = np.zeros(4, dtype=np.double)
+        self._imu_received = False
+        self._imu_first_received_logged = False
+        self._imu_startup_started_at = None
+        self._imu_startup_timeout_logged = False
+        self._next_imu_startup_warning = 0.0
         self.raw_cmd_vel = np.zeros(3, dtype=np.float32)
         self.pending_remote_events = deque()
         self._joint_source = NamedJointStateSource(dtype=np.float64)
@@ -182,6 +187,12 @@ class BxiExample(Node):
         self.declare_parameter("/state_machine_info_hz", 10.0)
         self.state_machine_info_hz = float(
             self.get_parameter("/state_machine_info_hz").value
+        )
+
+        self.imu_required = self.topic_prefix.startswith("hardware/")
+        self.declare_parameter("/imu_startup_timeout_sec", 15.0)
+        self.imu_startup_timeout_sec = float(
+            self.get_parameter("/imu_startup_timeout_sec").value
         )
 
         self.motor_override_topic = self.topic_prefix + "actuators_cmds_override"
@@ -292,6 +303,26 @@ class BxiExample(Node):
 
     def startup_step(self, now: float) -> bool:
         """Perform the ELF3-specific two-stage reset before control starts."""
+        if self.imu_required and not self._imu_received:
+            if self._imu_startup_started_at is None:
+                self._imu_startup_started_at = now
+            elif (
+                not self._imu_startup_timeout_logged
+                and now - self._imu_startup_started_at >= self.imu_startup_timeout_sec
+            ):
+                self.get_logger().error(
+                    f"IMU startup timeout: no data received on "
+                    f"{self.topic_prefix + 'imu_data'} after "
+                    f"{self.imu_startup_timeout_sec:.1f}s"
+                )
+                self._imu_startup_timeout_logged = True
+            if now >= self._next_imu_startup_warning:
+                self.get_logger().warning(
+                    f"waiting for IMU data on {self.topic_prefix + 'imu_data'} "
+                    "before control startup"
+                )
+                self._next_imu_startup_warning = now + 2.0
+            return False
         if self.step == 0:
             if self.robot_reset(1, False):
                 self.get_logger().info("robot reset step 1 requested")
@@ -541,6 +572,12 @@ class BxiExample(Node):
             self.quat_wxyz[:] = quat.w, quat.x, quat.y, quat.z
             self.omega[:] = avel.x, avel.y, avel.z
             self.linear_acceleration[:] = acceleration.x, acceleration.y, acceleration.z
+            self._imu_received = True
+            if not self._imu_first_received_logged:
+                self._imu_first_received_logged = True
+                self.get_logger().info(
+                    "received first IMU frame on %s", self.topic_prefix + "imu_data"
+                )
 
     def touch_callback(self, _msg):
         pass

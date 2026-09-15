@@ -1,0 +1,22 @@
+imu_node:
+  ros__parameters:
+    # Select the protocol adapter. New hardware is added as another backend
+    # and registered in src/backend_factory.cpp.
+    driver: hipnuc
+    port: /dev/ttyIMU_2
+    baudrate: 921600
+
+    # Common ROS output contract consumed by the robot controller.
+    frame_id: imu_link
+    imu_topic: /hardware/imu_data
+
+    # Optional decoded outputs. The controller only needs imu_topic.
+    euler_topic: /euler_data
+    magnetic_topic: /magnetic_data
+    temperature_topic: /temp_data
+    pressure_topic: /pressure_data
+    imu_enabled: true
+    euler_enabled: false
+    magnetic_enabled: false
+    temperature_enabled: false
+    pressure_enabled: false

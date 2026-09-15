@@ -918,6 +918,9 @@ system:
   start:
     - "mkdir -p /var/log/bxi_log"
     - "ros2 launch bxi_example_py_elf3 example_demo_hw.launch.py > /var/log/bxi_log/$(date +%Y-%m-%d_%H-%M-%S)_elf.log 2>&1 &"
+    # Start the configurable IMU backend only when hardware_elf3 has not
+    # already published the common IMU topic.
+    - "bash -c 'for i in $(seq 1 100); do if ros2 topic info /hardware/imu_data 2>/dev/null | grep -Eq \"Publisher count: [1-9][0-9]*\"; then exit 0; fi; sleep 0.1; done; exec ros2 launch bxi_imu imu.launch.py driver:=hipnuc port:=/dev/ttyIMU_2 baudrate:=921600' > /var/log/bxi_log/$(date +%Y-%m-%d_%H-%M-%S)_imu.log 2>&1 &"
     - "ros2 launch bxi_example_bms bms.launch.py > /var/log/bxi_log/bms_$(date +%Y-%m-%d_%H-%M-%S)_bms.log 2>&1 &"
     - "su bxi -c \"cd /home/bxi/bxi_ws/bxi_voice && ./bin/bxi-voice\" 2>&1 &"
   stop:
@@ -925,13 +928,13 @@ system:
     # executable names can leave "ros2 launch ... example_demo_hw.launch.py"
     # alive; that parent keeps /tmp/bxi_example_hw.lock held and blocks the
     # next start.
-    - "pkill -SIGINT -f '[r]os2 launch bxi_example_py_elf3 .*demo_hw.*\\.py|[h]ardware_elf3|[b]xi_example_py_elf3_demo|[/]bxi_depth_camera/cameras|[b]xi_depth_camera\\.manager' || true"
+    - "pkill -SIGINT -f '[r]os2 launch bxi_example_py_elf3 .*demo_hw.*\\.py|[h]ardware_elf3|[b]xi_example_py_elf3_demo|[/]bxi_imu|[/]imu_node|[i]mu.launch.py|[/]bxi_depth_camera/cameras|[b]xi_depth_camera\\.manager' || true"
     - "pkill -SIGINT -f '[r]os2 launch bxi_example_bms bms\\.launch\\.py|[/]bxi_bms|[/]bxi_example_bms' || true"
     - "pkill -SIGINT -f '[b]xi-voice' || true"
     - "sleep 2"
-    - "pkill -SIGTERM -f '[r]os2 launch bxi_example_py_elf3 .*demo_hw.*\\.py|[h]ardware_elf3|[b]xi_example_py_elf3_demo|[/]bxi_depth_camera/cameras|[b]xi_depth_camera\\.manager' || true"
+    - "pkill -SIGTERM -f '[r]os2 launch bxi_example_py_elf3 .*demo_hw.*\\.py|[h]ardware_elf3|[b]xi_example_py_elf3_demo|[/]bxi_imu|[/]imu_node|[i]mu.launch.py|[/]bxi_depth_camera/cameras|[b]xi_depth_camera\\.manager' || true"
     - "sleep 1"
-    - "pkill -SIGKILL -f '[r]os2 launch bxi_example_py_elf3 .*demo_hw.*\\.py|[h]ardware_elf3|[b]xi_example_py_elf3_demo|[/]bxi_depth_camera/cameras|[b]xi_depth_camera\\.manager' || true"
+    - "pkill -SIGKILL -f '[r]os2 launch bxi_example_py_elf3 .*demo_hw.*\\.py|[h]ardware_elf3|[b]xi_example_py_elf3_demo|[/]bxi_imu|[/]imu_node|[i]mu.launch.py|[/]bxi_depth_camera/cameras|[b]xi_depth_camera\\.manager' || true"
     - "pkill -SIGKILL -f '[r]os2 launch bxi_example_bms bms\\.launch\\.py|[/]bxi_bms|[/]bxi_example_bms' || true"
     - "pkill -SIGKILL -f '[b]xi-voice' || true"
 
