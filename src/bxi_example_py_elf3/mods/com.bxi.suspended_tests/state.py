@@ -91,15 +91,20 @@ class SuspendedVibrationState(ButtonControlState):
                     "pending vibration start cancelled by remote Y button",
                 )
                 return
-            if (
-                node.returning_to_center
-                and node.return_owner == "limb_test_stop"
-            ):
+            # A stop command starts a smooth return which can last several
+            # seconds.  A vibration request arriving during *any* such
+            # return used to be discarded (only the limb-test return was
+            # queued).  The button edge was already consumed, so the user
+            # had to press Y again after the return completed.  Keep the
+            # request as pending data and let the timer start it once the
+            # centre pose is reached.
+            if node.returning_to_center:
                 node.pending_mode = "vibration"
                 node._queue_diagnostic_log(
                     "info",
-                    "vibration requested during A-key safe return; vibration "
-                    "will start automatically after the zero pose is reached",
+                    "vibration requested during %s safe return; vibration "
+                    "will start automatically after the zero pose is reached"
+                    % (node.return_owner or "mode"),
                 )
                 return
             if node.returning_to_center or node.pending_mode:
