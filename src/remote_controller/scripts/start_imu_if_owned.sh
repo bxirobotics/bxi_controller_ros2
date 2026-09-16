@@ -8,6 +8,7 @@ device_link="${IMU_DEVICE:-/dev/ttyIMU}"
 baudrate="${IMU_BAUDRATE:-921600}"
 imu_topic="${IMU_TOPIC:-/hardware/imu_data}"
 hardware_node="${HARDWARE_NODE:-/hardware_elf3}"
+imu_data_wait_seconds="${IMU_DATA_WAIT_SECONDS:-5}"
 
 log() {
   printf '[imu guard] %s\n' "$*"
@@ -27,6 +28,14 @@ log "port_link=$device_link"
 log "baudrate=$baudrate"
 log "imu_topic=$imu_topic"
 log "hardware_node=$hardware_node"
+log "imu_data_wait_seconds=$imu_data_wait_seconds"
+
+case "$imu_data_wait_seconds" in
+  ''|*[!0-9]*|0)
+    log "invalid IMU_DATA_WAIT_SECONDS=$imu_data_wait_seconds; using 5"
+    imu_data_wait_seconds=5
+    ;;
+esac
 
 bxi_imu_prefix="$(ros2 pkg prefix bxi_imu 2>&1 || true)"
 hardware_prefix="$(ros2 pkg prefix hardware_elf3 2>&1 || true)"
@@ -37,8 +46,8 @@ log "bxi_imu_executable=${bxi_imu_prefix:+$bxi_imu_prefix/lib/bxi_imu/imu_node}"
 log "hardware_elf3_prefix=$hardware_prefix"
 log "hardware_elf3_executable=${hardware_prefix:+$hardware_prefix/lib/hardware_elf3/hardware_elf3}"
 
-if ! command -v fuser >/dev/null 2>&1; then
-  log "fuser is unavailable; refusing to start bxi_imu without serial ownership detection"
+if ! command -v fuser >/dev/null 2>&1 || ! command -v timeout >/dev/null 2>&1; then
+  log "fuser or timeout is unavailable; refusing to start bxi_imu without safety checks"
   exit 1
 fi
 
@@ -60,13 +69,35 @@ fi
 
 imu_parameter="$(ros2 param get "$hardware_node" hardware_config/imu 2>&1 || true)"
 log "hardware_config/imu=$imu_parameter"
-if ! printf '%s\n' "$imu_parameter" |
-  grep -Eiq '(^|[^[:alnum:]_])false([^[:alnum:]_]|$)'; then
-  log "hardware IMU switch was not confirmed as false; refusing to start bxi_imu"
-  printf '%s\n' "$imu_parameter" | tee -a "$log_file"
-  exit 1
+
+# A publisher can exist even when hardware IMU reading is disabled. Decide
+# whether the hardware path is usable only after receiving an actual sample.
+log "topic discovery result for $imu_topic:"
+ros2 topic info -v "$imu_topic" 2>&1 || true
+
+sample_file="$(mktemp /tmp/bxi_imu_sample.XXXXXX)"
+sample_received=0
+sample_deadline=$((SECONDS + imu_data_wait_seconds))
+log "waiting up to ${imu_data_wait_seconds}s for an actual message on $imu_topic"
+while [ "$SECONDS" -lt "$sample_deadline" ]; do
+  if timeout 1s ros2 topic echo --once \
+    --qos-reliability best_effort \
+    --qos-durability volatile \
+    "$imu_topic" sensor_msgs/msg/Imu >"$sample_file" 2>&1; then
+    sample_received=1
+    break
+  fi
+  sleep 0.1
+done
+
+if [ "$sample_received" -eq 1 ]; then
+  log "hardware IMU data received; keeping the existing publisher and not starting bxi_imu"
+  sed 's/^/[imu sample] /' "$sample_file"
+  rm -f "$sample_file"
+  exit 0
 fi
-log "hardware IMU switch confirmed disabled: hardware_config/imu=false"
+rm -f "$sample_file"
+log "no IMU message received within ${imu_data_wait_seconds}s; evaluating bxi_imu fallback"
 
 device="$(readlink -f "$device_link" 2>/dev/null || true)"
 log "resolved_device=$device"
@@ -75,22 +106,14 @@ if [ -z "$device" ] || [ ! -e "$device" ]; then
   exit 1
 fi
 
-# A publisher means another ROS node already owns the common IMU data path.
-# The serial check below catches a reader that has opened the port but has not
-# published its first frame yet.
-if ros2 topic info "$imu_topic" 2>/dev/null |
-  grep -Eq 'Publisher count: [1-9][0-9]*'; then
-  log "$imu_topic already has a publisher; refusing to start bxi_imu"
-  ros2 topic info -v "$imu_topic" 2>&1 | tee -a "$log_file" || true
-  exit 0
-fi
-
+# A reader may own the tty without publishing usable data. Never start a
+# second reader until the real serial device is confirmed free.
 fuser -s "$device"
 fuser_status=$?
 log "fuser_status=$fuser_status for $device"
 if [ "$fuser_status" -eq 0 ]; then
   log "$device is already in use; refusing to start bxi_imu"
-  fuser -v "$device" 2>&1 | tee -a "$log_file" || true
+  fuser -v "$device" 2>&1 || true
   exit 0
 fi
 
@@ -99,7 +122,7 @@ if [ "$fuser_status" -gt 1 ]; then
   exit 1
 fi
 
-log "ownership checks passed: no publisher on $imu_topic and $device is free"
+log "fallback checks passed: no message on $imu_topic and $device is free"
 exec ros2 launch bxi_imu imu.launch.py \
   driver:="$driver" \
   port:="$device_link" \

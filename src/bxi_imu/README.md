@@ -32,7 +32,10 @@ ros2 launch bxi_imu imu.launch.py driver:=hipnuc port:=/dev/ttyIMU
 
 The legacy hardware reader remains enabled by default for backward
 compatibility. The controller's `start` action passes `enable_imu:=false`
-automatically before starting this package.
+automatically, then waits for an actual message on `/hardware/imu_data`.
+If hardware still provides data, it keeps the hardware publisher and does not
+start this package. If no message arrives and `/dev/ttyIMU` is free, it starts
+`bxi_imu`. A topic publisher count alone is not treated as valid IMU data.
 
 ## Adding another IMU
 
