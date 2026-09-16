@@ -18,6 +18,9 @@ imu_node:
     temperature_topic: /temp_data
     pressure_topic: /pressure_data
     imu_enabled: true
+    # Drop frames whose quaternion is not finite or whose norm is outside
+    # [1 - tolerance, 1 + tolerance]. The default accepts [0.9, 1.1].
+    quaternion_norm_tolerance: 0.1
     euler_enabled: false
     magnetic_enabled: false
     temperature_enabled: false

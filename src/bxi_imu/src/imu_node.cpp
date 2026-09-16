@@ -13,6 +13,8 @@
 // limitations under the License.
 
 #include <atomic>
+#include <cmath>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <thread>
@@ -40,6 +42,8 @@ public:
     temperature_topic_ = declare_parameter<std::string>("temperature_topic", "/temp_data");
     pressure_topic_ = declare_parameter<std::string>("pressure_topic", "/pressure_data");
     imu_enabled_ = declare_parameter<bool>("imu_enabled", true);
+    quaternion_norm_tolerance_ = declare_parameter<double>(
+      "quaternion_norm_tolerance", 0.1);
     euler_enabled_ = declare_parameter<bool>("euler_enabled", false);
     magnetic_enabled_ = declare_parameter<bool>("magnetic_enabled", false);
     temperature_enabled_ = declare_parameter<bool>("temperature_enabled", false);
@@ -59,6 +63,16 @@ public:
       pressure_topic_,
       rclcpp::SensorDataQoS());
 
+    if (!std::isfinite(quaternion_norm_tolerance_) ||
+      quaternion_norm_tolerance_ < 0.0 || quaternion_norm_tolerance_ >= 1.0)
+    {
+      RCLCPP_WARN(
+        get_logger(),
+        "invalid quaternion_norm_tolerance=%.6f; using 0.1",
+        quaternion_norm_tolerance_);
+      quaternion_norm_tolerance_ = 0.1;
+    }
+
     backend_ = create_backend(driver_, port_, baudrate_, get_logger());
     if (!backend_ || !backend_->open()) {
       RCLCPP_ERROR(
@@ -68,8 +82,11 @@ public:
     }
 
     RCLCPP_INFO(
-      get_logger(), "using IMU backend '%s', publishing %s",
-      backend_->name().c_str(), imu_topic_.c_str());
+      get_logger(),
+      "using IMU backend '%s', publishing %s; quaternion norm validation "
+      "enabled with tolerance %.3f (accepted range %.3f..%.3f)",
+      backend_->name().c_str(), imu_topic_.c_str(), quaternion_norm_tolerance_,
+      1.0 - quaternion_norm_tolerance_, 1.0 + quaternion_norm_tolerance_);
     running_ = true;
     reader_thread_ = std::thread([this]() {read_loop();});
   }
@@ -91,6 +108,20 @@ private:
     while (rclcpp::ok() && running_) {
       ImuSample sample;
       if (!backend_->read(sample)) {
+        continue;
+      }
+      if (!valid_quaternion(sample.imu.orientation)) {
+        ++invalid_quaternion_count_;
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 5000,
+          "dropping IMU frame with invalid quaternion: "
+          "w=%.6f x=%.6f y=%.6f z=%.6f norm=%.6f "
+          "(accepted range %.3f..%.3f), dropped=%lu",
+          sample.imu.orientation.w, sample.imu.orientation.x,
+          sample.imu.orientation.y, sample.imu.orientation.z,
+          quaternion_norm(sample.imu.orientation),
+          1.0 - quaternion_norm_tolerance_, 1.0 + quaternion_norm_tolerance_,
+          static_cast<unsigned long>(invalid_quaternion_count_));
         continue;
       }
       stamp_and_frame(sample);
@@ -121,6 +152,26 @@ private:
     sample.pressure.header.frame_id = frame_id_;
   }
 
+  double quaternion_norm(const geometry_msgs::msg::Quaternion & quaternion) const
+  {
+    return std::sqrt(
+      quaternion.w * quaternion.w + quaternion.x * quaternion.x +
+      quaternion.y * quaternion.y + quaternion.z * quaternion.z);
+  }
+
+  bool valid_quaternion(const geometry_msgs::msg::Quaternion & quaternion) const
+  {
+    if (!std::isfinite(quaternion.w) || !std::isfinite(quaternion.x) ||
+      !std::isfinite(quaternion.y) || !std::isfinite(quaternion.z))
+    {
+      return false;
+    }
+
+    const double norm = quaternion_norm(quaternion);
+    return norm >= 1.0 - quaternion_norm_tolerance_ &&
+           norm <= 1.0 + quaternion_norm_tolerance_;
+  }
+
   std::string driver_;
   std::string port_;
   int baudrate_{0};
@@ -131,10 +182,12 @@ private:
   std::string temperature_topic_;
   std::string pressure_topic_;
   bool imu_enabled_{true};
+  double quaternion_norm_tolerance_{0.1};
   bool euler_enabled_{false};
   bool magnetic_enabled_{false};
   bool temperature_enabled_{false};
   bool pressure_enabled_{false};
+  std::uint64_t invalid_quaternion_count_{0};
 
   BackendPtr backend_;
   std::atomic<bool> running_{false};
