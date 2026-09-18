@@ -576,7 +576,7 @@ class BxiExample(Node):
             if not self._imu_first_received_logged:
                 self._imu_first_received_logged = True
                 self.get_logger().info(
-                    "received first IMU frame on %s", self.topic_prefix + "imu_data"
+                    f"received first IMU frame on {self.topic_prefix}imu_data"
                 )
 
     def touch_callback(self, _msg):

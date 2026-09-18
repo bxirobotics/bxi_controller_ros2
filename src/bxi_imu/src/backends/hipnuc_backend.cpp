@@ -90,28 +90,37 @@ bool HipnucBackend::read(ImuSample & sample)
     return false;
   }
   if (poll_result < 0) {
-    if (errno != EINTR) {
+    if (errno != EINTR && opened_) {
       RCLCPP_ERROR(logger_, "poll(%s) failed: %s", port_.c_str(), std::strerror(errno));
+      opened_ = false;
     }
     return false;
   }
-  if ((descriptor.revents & POLLIN) == 0) {
-    if (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+  if (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+    if (opened_) {
       RCLCPP_ERROR(logger_, "serial port %s is no longer readable", port_.c_str());
-      opened_ = false;
     }
+    opened_ = false;
+    return false;
+  }
+  if ((descriptor.revents & POLLIN) == 0) {
     return false;
   }
 
   uint8_t buffer[kBufferSize]{};
   const ssize_t count = ::read(fd_, buffer, sizeof(buffer));
   if (count < 0) {
-    if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+    if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR && opened_) {
       RCLCPP_ERROR(logger_, "read(%s) failed: %s", port_.c_str(), std::strerror(errno));
+      opened_ = false;
     }
     return false;
   }
   if (count == 0) {
+    if (opened_) {
+      RCLCPP_ERROR(logger_, "serial port %s returned EOF", port_.c_str());
+    }
+    opened_ = false;
     return false;
   }
 

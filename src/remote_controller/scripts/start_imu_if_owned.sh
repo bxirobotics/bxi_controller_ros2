@@ -37,14 +37,21 @@ case "$imu_data_wait_seconds" in
     ;;
 esac
 
-bxi_imu_prefix="$(ros2 pkg prefix bxi_imu 2>&1 || true)"
-hardware_prefix="$(ros2 pkg prefix hardware_elf3 2>&1 || true)"
+bxi_imu_prefix="$(ros2 pkg prefix bxi_imu 2>/dev/null || true)"
+hardware_prefix="$(ros2 pkg prefix hardware_elf3 2>/dev/null || true)"
+bxi_imu_config="${bxi_imu_prefix:+$bxi_imu_prefix/share/bxi_imu/config/imu.yaml}"
+bxi_imu_executable="${bxi_imu_prefix:+$bxi_imu_prefix/lib/bxi_imu/imu_node}"
 log "bxi_imu_prefix=$bxi_imu_prefix"
-log "bxi_imu_launch=${bxi_imu_prefix:+$bxi_imu_prefix/share/bxi_imu/launch/imu.launch.py}"
-log "bxi_imu_config=${bxi_imu_prefix:+$bxi_imu_prefix/share/bxi_imu/config/imu.yaml}"
-log "bxi_imu_executable=${bxi_imu_prefix:+$bxi_imu_prefix/lib/bxi_imu/imu_node}"
+log "bxi_imu_config=$bxi_imu_config"
+log "bxi_imu_executable=$bxi_imu_executable"
 log "hardware_elf3_prefix=$hardware_prefix"
 log "hardware_elf3_executable=${hardware_prefix:+$hardware_prefix/lib/hardware_elf3/hardware_elf3}"
+
+if [ -z "$bxi_imu_prefix" ] || [ ! -f "$bxi_imu_config" ] ||
+  [ ! -x "$bxi_imu_executable" ]; then
+  log "bxi_imu is not installed completely; refusing to start the fallback"
+  exit 1
+fi
 
 if ! command -v fuser >/dev/null 2>&1 || ! command -v timeout >/dev/null 2>&1; then
   log "fuser or timeout is unavailable; refusing to start bxi_imu without safety checks"
@@ -123,7 +130,10 @@ if [ "$fuser_status" -gt 1 ]; then
 fi
 
 log "fallback checks passed: no message on $imu_topic and $device is free"
-exec ros2 launch bxi_imu imu.launch.py \
-  driver:="$driver" \
-  port:="$device_link" \
-  baudrate:="$baudrate"
+log "starting bxi_imu executable directly so its exit code is reported"
+exec "$bxi_imu_executable" \
+  --ros-args \
+  --params-file "$bxi_imu_config" \
+  -p "driver:=$driver" \
+  -p "port:=$device_link" \
+  -p "baudrate:=$baudrate"

@@ -88,8 +88,12 @@ public:
       backend_->name().c_str(), imu_topic_.c_str(), quaternion_norm_tolerance_,
       1.0 - quaternion_norm_tolerance_, 1.0 + quaternion_norm_tolerance_);
     running_ = true;
+    startup_ok_ = true;
     reader_thread_ = std::thread([this]() {read_loop();});
   }
+
+  bool startup_ok() const {return startup_ok_;}
+  bool runtime_failed() const {return runtime_failed_.load();}
 
   ~ImuNode() override
   {
@@ -108,20 +112,33 @@ private:
     while (rclcpp::ok() && running_) {
       ImuSample sample;
       if (!backend_->read(sample)) {
+        if (!running_ || !rclcpp::ok()) {
+          return;
+        }
+        if (!backend_->is_open()) {
+          runtime_failed_ = true;
+          running_ = false;
+          RCLCPP_ERROR(
+            get_logger(), "IMU backend '%s' lost access to %s; stopping IMU node",
+            backend_->name().c_str(), port_.c_str());
+          rclcpp::shutdown();
+          return;
+        }
         continue;
       }
       if (!valid_quaternion(sample.imu.orientation)) {
         ++invalid_quaternion_count_;
+        const std::string dropped_count = std::to_string(invalid_quaternion_count_);
         RCLCPP_WARN_THROTTLE(
           get_logger(), *get_clock(), 5000,
           "dropping IMU frame with invalid quaternion: "
           "w=%.6f x=%.6f y=%.6f z=%.6f norm=%.6f "
-          "(accepted range %.3f..%.3f), dropped=%lu",
+          "(accepted range %.3f..%.3f), dropped=%s",
           sample.imu.orientation.w, sample.imu.orientation.x,
           sample.imu.orientation.y, sample.imu.orientation.z,
           quaternion_norm(sample.imu.orientation),
           1.0 - quaternion_norm_tolerance_, 1.0 + quaternion_norm_tolerance_,
-          static_cast<unsigned long>(invalid_quaternion_count_));
+          dropped_count.c_str());
         continue;
       }
       stamp_and_frame(sample);
@@ -139,6 +156,12 @@ private:
       }
       if (pressure_enabled_ && sample.has_pressure) {
         pressure_pub_->publish(sample.pressure);
+      }
+      if (!first_sample_logged_) {
+        first_sample_logged_ = true;
+        RCLCPP_INFO(
+          get_logger(), "received first valid IMU frame from %s",
+          port_.c_str());
       }
     }
   }
@@ -172,6 +195,7 @@ private:
            norm <= 1.0 + quaternion_norm_tolerance_;
   }
 
+private:
   std::string driver_;
   std::string port_;
   int baudrate_{0};
@@ -188,6 +212,9 @@ private:
   bool temperature_enabled_{false};
   bool pressure_enabled_{false};
   std::uint64_t invalid_quaternion_count_{0};
+  bool startup_ok_{false};
+  bool first_sample_logged_{false};
+  std::atomic<bool> runtime_failed_{false};
 
   BackendPtr backend_;
   std::atomic<bool> running_{false};
@@ -204,7 +231,13 @@ private:
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<bxi_imu::ImuNode>(rclcpp::NodeOptions{}));
+  auto node = std::make_shared<bxi_imu::ImuNode>(rclcpp::NodeOptions{});
+  if (!node->startup_ok()) {
+    rclcpp::shutdown();
+    return 1;
+  }
+  rclcpp::spin(node);
+  const int exit_code = node->runtime_failed() ? 1 : 0;
   rclcpp::shutdown();
-  return 0;
+  return exit_code;
 }

@@ -36,6 +36,7 @@ public:
 
   bool open() override;
   bool read(ImuSample & sample) override;
+  bool is_open() const override {return opened_.load();}
   void close() override;
   std::string name() const override {return "hipnuc";}
 

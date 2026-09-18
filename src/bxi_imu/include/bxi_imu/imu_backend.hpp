@@ -58,6 +58,8 @@ public:
   virtual bool open() = 0;
   // Returns true for one fully decoded sample and false on timeout/error.
   virtual bool read(ImuSample & sample) = 0;
+  // False means the backend can no longer read from its device.
+  virtual bool is_open() const = 0;
   virtual void close() = 0;
   virtual std::string name() const = 0;
 };
