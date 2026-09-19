@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from bxi_example_py_elf3.policies import DanceMotionPolicyGravityIsaaclabV2
+from bxi_example_py_elf3.policies import DanceMotionPolicyGravityIsaaclabV3
 from bxi_example_py_elf3.framework.mod_api import ResourceHandle
 from bxi_example_py_elf3.framework.mod_api import MotionReplayState
 
@@ -13,12 +13,12 @@ if TYPE_CHECKING:
 PD_BRAKE_STATE = "com.bxi.basic_actions/pd_brake"
 
 
-class LieDownState(MotionReplayState[DanceMotionPolicyGravityIsaaclabV2]):
+class LieDownState(MotionReplayState[DanceMotionPolicyGravityIsaaclabV3]):
     def __init__(
         self,
         name: str,
         state_id: int,
-        policy: ResourceHandle[DanceMotionPolicyGravityIsaaclabV2],
+        policy: ResourceHandle[DanceMotionPolicyGravityIsaaclabV3],
     ) -> None:
         super().__init__(
             name,
