@@ -919,10 +919,10 @@ system:
     - "mkdir -p /var/log/bxi_log/imu"
     # The external bxi_imu process owns the HiPNUC serial device. Explicitly
     # disable the legacy hardware reader so both nodes cannot read it.
-    - "ros2 launch bxi_example_py_elf3 example_demo_hw.launch.py enable_imu:=false > /var/log/bxi_log/imu/$(date +%Y-%m-%d_%H-%M-%S)_elf.log 2>&1 &"
+    - "ros2 launch bxi_example_py_elf3 example_demo_hw.launch.py enable_imu:=false > /var/log/bxi_log/$(date +%Y-%m-%d_%H-%M-%S)_elf.log 2>&1 &"
     # Wait for an actual hardware IMU sample. Fall back to bxi_imu only when
     # no sample arrives and the real tty is not owned by another process.
-    - "bash -c 'imu_log=/var/log/bxi_log/imu_$(date +%Y-%m-%d_%H-%M-%S).log; exec \"$(ros2 pkg prefix remote_controller)/share/remote_controller/scripts/start_imu_if_owned.sh\" \"$imu_log\"' > /var/log/bxi_log/imu_guard_$(date +%Y-%m-%d_%H-%M-%S).log 2>&1 &"
+    - "bash -c 'imu_log=/var/log/bxi_log/imu/imu_$(date +%Y-%m-%d_%H-%M-%S).log; exec \"$(ros2 pkg prefix remote_controller)/share/remote_controller/scripts/start_imu_if_owned.sh\" \"$imu_log\"' > /var/log/bxi_log/imu_guard_$(date +%Y-%m-%d_%H-%M-%S).log 2>&1 &"
     - "ros2 launch bxi_example_bms bms.launch.py > /var/log/bxi_log/bms_$(date +%Y-%m-%d_%H-%M-%S)_bms.log 2>&1 &"
     - "su bxi -c \"cd /home/bxi/bxi_ws/bxi_voice && ./bin/bxi-voice\" 2>&1 &"
   stop:
