@@ -18,9 +18,11 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <chrono>
 #include <vector>
 #include <regex>
 
@@ -54,6 +56,8 @@ public:
     temperature_enabled_ = declare_parameter<bool>("temperature_enabled", false);
     pressure_enabled_ = declare_parameter<bool>("pressure_enabled", false);
     axis_mapping_ = declare_parameter<std::string>("axis_mapping", "y,-x,z");
+    imu_frequency_hz_ = declare_parameter<double>("imu_frequency_hz", 200.0);
+    imu_timeout_tolerance_ms_ = declare_parameter<double>("imu_timeout_tolerance_ms", 1.0);
     imu_candidates_ = declare_parameter<std::vector<std::string>>(
       "imu_candidates",
       std::vector<std::string>{
@@ -83,6 +87,14 @@ public:
         quaternion_norm_tolerance_);
       quaternion_norm_tolerance_ = 0.1;
     }
+    if (!std::isfinite(imu_frequency_hz_) || imu_frequency_hz_ <= 0.0) {
+      RCLCPP_WARN(get_logger(), "invalid imu_frequency_hz; using 200 Hz");
+      imu_frequency_hz_ = 200.0;
+    }
+    if (!std::isfinite(imu_timeout_tolerance_ms_) || imu_timeout_tolerance_ms_ < 0.0) {
+      RCLCPP_WARN(get_logger(), "invalid imu_timeout_tolerance_ms; using 1 ms");
+      imu_timeout_tolerance_ms_ = 1.0;
+    }
 
     if (driver_ == "auto" || port_ == "auto") {
       select_backend_from_candidates();
@@ -108,10 +120,12 @@ public:
       "imu_topic    : %s\n"
       "frame_id     : %s\n"
       "axis_mapping : %s\n"
+      "frequency    : %.1f Hz (period %.3f ms, timeout %.3f ms)\n"
       "quat check   : enabled, norm %.3f..%.3f\n"
       "================================",
       backend_->name().c_str(), port_.c_str(), baudrate_, imu_topic_.c_str(),
-      frame_id_.c_str(), axis_mapping_.c_str(),
+      frame_id_.c_str(), axis_mapping_.c_str(), imu_frequency_hz_,
+      expected_period_ms(), timeout_period_ms(),
       1.0 - quaternion_norm_tolerance_, 1.0 + quaternion_norm_tolerance_);
     running_ = true;
     startup_ok_ = true;
@@ -200,6 +214,7 @@ private:
     while (rclcpp::ok() && running_) {
       ImuSample sample;
       if (!backend_->read(sample)) {
+        check_imu_timeout(false);
         if (!running_ || !rclcpp::ok()) {
           return;
         }
@@ -214,6 +229,7 @@ private:
         }
         continue;
       }
+      check_imu_timeout(true);
       transform_sample_to_robot_frame(sample);
       if (!valid_quaternion(sample.imu.orientation)) {
         ++invalid_quaternion_count_;
@@ -313,6 +329,58 @@ private:
     }
   }
 
+  double expected_period_ms() const
+  {
+    return 1000.0 / imu_frequency_hz_;
+  }
+
+  double timeout_period_ms() const
+  {
+    return expected_period_ms() + imu_timeout_tolerance_ms_;
+  }
+
+  void check_imu_timeout(bool sample_received)
+  {
+    if (imu_frequency_hz_ <= 0.0 || imu_timeout_tolerance_ms_ < 0.0) {
+      return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (sample_received) {
+      if (last_sample_time_.has_value()) {
+        const double gap_ms = std::chrono::duration<double, std::milli>(
+          now - *last_sample_time_).count();
+        if (gap_ms > timeout_period_ms()) {
+          if (!timeout_reported_) {
+            RCLCPP_WARN(
+              get_logger(),
+              "IMU frame timeout: gap=%.3f ms, expected=%.3f ms, threshold=%.3f ms",
+              gap_ms, expected_period_ms(), timeout_period_ms());
+          }
+          timeout_reported_ = true;
+        } else if (timeout_reported_) {
+          RCLCPP_INFO(
+            get_logger(), "IMU data recovered: gap=%.3f ms", gap_ms);
+        }
+      }
+      last_sample_time_ = now;
+      timeout_reported_ = false;
+      return;
+    }
+
+    if (last_sample_time_.has_value() && !timeout_reported_) {
+      const double gap_ms = std::chrono::duration<double, std::milli>(
+        now - *last_sample_time_).count();
+      if (gap_ms > timeout_period_ms()) {
+        RCLCPP_WARN(
+          get_logger(),
+          "IMU data timeout: no valid frame for %.3f ms, expected period=%.3f ms",
+          gap_ms, expected_period_ms());
+        timeout_reported_ = true;
+      }
+    }
+  }
+
   double quaternion_norm(const geometry_msgs::msg::Quaternion & quaternion) const
   {
     return std::sqrt(
@@ -344,6 +412,8 @@ private:
   std::string temperature_topic_;
   std::string pressure_topic_;
   std::string axis_mapping_;
+  double imu_frequency_hz_{200.0};
+  double imu_timeout_tolerance_ms_{1.0};
   bool imu_enabled_{true};
   double quaternion_norm_tolerance_{0.1};
   bool euler_enabled_{false};
@@ -355,6 +425,8 @@ private:
   bool startup_ok_{false};
   bool first_sample_logged_{false};
   std::atomic<bool> runtime_failed_{false};
+  std::optional<std::chrono::steady_clock::time_point> last_sample_time_;
+  bool timeout_reported_{false};
 
   BackendPtr backend_;
   std::atomic<bool> running_{false};

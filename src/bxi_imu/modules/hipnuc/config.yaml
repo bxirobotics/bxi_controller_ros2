@@ -13,6 +13,8 @@ imu_module:
     pressure_topic: /pressure_data
     # HiPNUC installation already matches the robot coordinate system.
     axis_mapping: "identity"
+    imu_frequency_hz: 500.0
+    imu_timeout_tolerance_ms: 1.0
     imu_enabled: true
     quaternion_norm_tolerance: 0.1
     euler_enabled: false

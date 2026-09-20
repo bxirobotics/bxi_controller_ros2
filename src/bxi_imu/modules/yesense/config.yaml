@@ -13,6 +13,8 @@ imu_module:
     pressure_topic: /pressure_data
     # robot_x=imu_y, robot_y=-imu_x, robot_z=imu_z
     axis_mapping: "y,-x,z"
+    imu_frequency_hz: 200.0
+    imu_timeout_tolerance_ms: 1.0
     imu_enabled: true
     quaternion_norm_tolerance: 0.1
     euler_enabled: false
