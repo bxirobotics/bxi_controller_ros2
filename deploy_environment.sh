@@ -6,6 +6,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REQUIREMENTS_FILE="${SCRIPT_DIR}/requirement.txt"
 PYTHON_EXECUTABLE="${PYTHON_EXECUTABLE:-/usr/bin/python3}"
 CHECK_ONLY=false
+INSTALL_RKNN=false
+RKNN_DIR="${SCRIPT_DIR}/runtime/rknn"
 
 usage() {
     cat <<'EOF'
@@ -82,10 +84,36 @@ if ! "$PYTHON_EXECUTABLE" -m pip --version >/dev/null 2>&1; then
     exit 1
 fi
 
+if [[ "$(uname -m)" == aarch64 && -d "$RKNN_DIR" ]]; then
+    INSTALL_RKNN=true
+fi
+
+if [[ "$INSTALL_RKNN" == true ]]; then
+    . /etc/os-release
+    if [[ "$(uname -m)" != aarch64 || "$ID" != ubuntu || "$VERSION_ID" != 22.04 ]]; then
+        echo "error: this RKNN package requires aarch64 Ubuntu 22.04" >&2
+        exit 1
+    fi
+    shopt -s nullglob
+    RKNN_WHEELS=("${RKNN_DIR}"/rknn_toolkit_lite2-*.whl)
+    if ((${#RKNN_WHEELS[@]} != 1)) || [[ ! -r "${RKNN_DIR}/librknnrt.so" ]]; then
+        echo "error: bundled RKNN runtime is missing from this ARM64 package" >&2
+        exit 1
+    fi
+    if [[ "$CHECK_ONLY" == false && "$EUID" != 0 ]]; then
+        echo "error: RKNN setup writes /usr/lib/librknnrt.so; run with sudo -H" >&2
+        exit 1
+    fi
+fi
+
 check_environment() {
     if ! "$PYTHON_EXECUTABLE" -m pip check; then
         echo "warning: pip found conflicts in the interpreter's full environment." >&2
         echo "The conflicts may come from Ubuntu/ROS packages outside requirement.txt." >&2
+    fi
+    if [[ "$INSTALL_RKNN" == true ]]; then
+        "$PYTHON_EXECUTABLE" -c \
+            'from rknnlite.api import RKNNLite; import ctypes; ctypes.CDLL("/usr/lib/librknnrt.so")'
     fi
 }
 
@@ -99,6 +127,12 @@ if [[ "$CHECK_ONLY" == true ]]; then
 fi
 
 "$PYTHON_EXECUTABLE" -m pip install --upgrade -r "$REQUIREMENTS_FILE" --index-url "${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}"
+if [[ "$INSTALL_RKNN" == true ]]; then
+    "$PYTHON_EXECUTABLE" -m pip install "${RKNN_WHEELS[0]}" \
+        --index-url "${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}"
+    install -m 0644 "${RKNN_DIR}/librknnrt.so" /usr/lib/librknnrt.so
+    ldconfig
+fi
 check_environment
 
 echo "Python environment deployment completed."
