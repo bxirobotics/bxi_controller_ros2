@@ -3,8 +3,8 @@
 set -u
 
 log_file="${1:-/var/log/bxi_log/imu_guard.log}"
-driver="${IMU_DRIVER:-hipnuc}"
-device_link="${IMU_DEVICE:-/dev/ttyIMU}"
+driver="${IMU_DRIVER:-auto}"
+device_link="${IMU_DEVICE:-auto}"
 baudrate="${IMU_BAUDRATE:-921600}"
 imu_topic="${IMU_TOPIC:-/hardware/imu_data}"
 hardware_node="${HARDWARE_NODE:-/hardware_elf3}"
@@ -25,6 +25,7 @@ log "===== IMU startup ====="
 log "started_at=$(date --iso-8601=seconds)"
 log "driver=$driver"
 log "port_link=$device_link"
+log "imu_candidate_priority=port suffix order: ttyIMU, ttyIMU_*_1, ttyIMU_*_2, ..."
 log "baudrate=$baudrate"
 log "imu_topic=$imu_topic"
 log "hardware_node=$hardware_node"
@@ -39,15 +40,14 @@ esac
 
 bxi_imu_prefix="$(ros2 pkg prefix bxi_imu 2>/dev/null || true)"
 hardware_prefix="$(ros2 pkg prefix hardware_elf3 2>/dev/null || true)"
-bxi_imu_config="${bxi_imu_prefix:+$bxi_imu_prefix/share/bxi_imu/config/imu.yaml}"
 bxi_imu_executable="${bxi_imu_prefix:+$bxi_imu_prefix/lib/bxi_imu/imu_node}"
 log "bxi_imu_prefix=$bxi_imu_prefix"
-log "bxi_imu_config=$bxi_imu_config"
+log "bxi_imu_module_config_dir=${bxi_imu_prefix:+$bxi_imu_prefix/share/bxi_imu/modules}"
 log "bxi_imu_executable=$bxi_imu_executable"
 log "hardware_elf3_prefix=$hardware_prefix"
 log "hardware_elf3_executable=${hardware_prefix:+$hardware_prefix/lib/hardware_elf3/hardware_elf3}"
 
-if [ -z "$bxi_imu_prefix" ] || [ ! -f "$bxi_imu_config" ] ||
+if [ -z "$bxi_imu_prefix" ] || [ ! -d "${bxi_imu_prefix:+$bxi_imu_prefix/share/bxi_imu/modules}" ] ||
   [ ! -x "$bxi_imu_executable" ]; then
   log "bxi_imu is not installed completely; refusing to start the fallback"
   exit 1
@@ -106,34 +106,52 @@ fi
 rm -f "$sample_file"
 log "no IMU message received within ${imu_data_wait_seconds}s; evaluating bxi_imu fallback"
 
-device="$(readlink -f "$device_link" 2>/dev/null || true)"
-log "resolved_device=$device"
-if [ -z "$device" ] || [ ! -e "$device" ]; then
-  log "IMU device $device_link is unavailable; refusing to start bxi_imu"
-  exit 1
+if [ "$device_link" = "auto" ]; then
+  available_candidate=0
+  for candidate_link in /dev/ttyIMU*; do
+    candidate="$(readlink -f "$candidate_link" 2>/dev/null || true)"
+    if [ -z "$candidate" ] || [ ! -e "$candidate" ]; then
+      log "priority candidate unavailable: $candidate_link"
+      continue
+    fi
+    available_candidate=1
+    fuser -s "$candidate"
+    fuser_status=$?
+    log "priority candidate=$candidate_link resolved_device=$candidate fuser_status=$fuser_status"
+    if [ "$fuser_status" -eq 0 ]; then
+      fuser -v "$candidate" 2>&1 || true
+    elif [ "$fuser_status" -gt 1 ]; then
+      log "unable to inspect $candidate; bxi_imu will enforce TIOCEXCL"
+    fi
+  done
+  if [ "$available_candidate" -ne 1 ]; then
+    log "no configured IMU candidate is present; refusing to start bxi_imu"
+    exit 1
+  fi
+else
+  device="$(readlink -f "$device_link" 2>/dev/null || true)"
+  log "resolved_device=$device"
+  if [ -z "$device" ] || [ ! -e "$device" ]; then
+    log "IMU device $device_link is unavailable; refusing to start bxi_imu"
+    exit 1
+  fi
+  fuser -s "$device"
+  fuser_status=$?
+  log "fuser_status=$fuser_status for $device"
+  if [ "$fuser_status" -eq 0 ]; then
+    log "$device is already in use; refusing to start bxi_imu"
+    fuser -v "$device" 2>&1 || true
+    exit 0
+  fi
+  if [ "$fuser_status" -gt 1 ]; then
+    log "unable to inspect $device; refusing to start bxi_imu"
+    exit 1
+  fi
 fi
 
-# A reader may own the tty without publishing usable data. Never start a
-# second reader until the real serial device is confirmed free.
-fuser -s "$device"
-fuser_status=$?
-log "fuser_status=$fuser_status for $device"
-if [ "$fuser_status" -eq 0 ]; then
-  log "$device is already in use; refusing to start bxi_imu"
-  fuser -v "$device" 2>&1 || true
-  exit 0
-fi
-
-if [ "$fuser_status" -gt 1 ]; then
-  log "unable to inspect $device (fuser status=$fuser_status); refusing to start bxi_imu"
-  exit 1
-fi
-
-log "fallback checks passed: no message on $imu_topic and $device is free"
-log "starting bxi_imu executable directly so its exit code is reported"
-exec "$bxi_imu_executable" \
-  --ros-args \
-  --params-file "$bxi_imu_config" \
-  -p "driver:=$driver" \
-  -p "port:=$device_link" \
-  -p "baudrate:=$baudrate"
+log "fallback checks passed: no message on $imu_topic; bxi_imu will apply configured IMU priority"
+log "starting bxi_imu launch so module configs are discovered"
+exec ros2 launch bxi_imu imu.launch.py \
+  driver:="$driver" \
+  port:="$device_link" \
+  baudrate:="$baudrate"

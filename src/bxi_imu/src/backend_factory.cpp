@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "bxi_imu/hipnuc_backend.hpp"
+#include "../modules/hipnuc/hipnuc_backend.hpp"
+#include "../modules/yesense/yesense_backend.hpp"
 
 namespace bxi_imu
 {
@@ -25,6 +26,9 @@ BackendPtr create_backend(
 {
   if (driver == "hipnuc") {
     return std::make_unique<HipnucBackend>(port, baudrate, logger);
+  }
+  if (driver == "yesense") {
+    return std::make_unique<YesenseBackend>(port, baudrate, logger);
   }
 
   RCLCPP_ERROR(

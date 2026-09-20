@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "bxi_imu/hipnuc_backend.hpp"
+#include "hipnuc_backend.hpp"
 
 #include <cerrno>
 #include <chrono>

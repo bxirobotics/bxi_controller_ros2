@@ -13,11 +13,15 @@
 // limitations under the License.
 
 #include <atomic>
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
+#include <regex>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -48,6 +52,11 @@ public:
     magnetic_enabled_ = declare_parameter<bool>("magnetic_enabled", false);
     temperature_enabled_ = declare_parameter<bool>("temperature_enabled", false);
     pressure_enabled_ = declare_parameter<bool>("pressure_enabled", false);
+    imu_candidates_ = declare_parameter<std::vector<std::string>>(
+      "imu_candidates",
+      std::vector<std::string>{
+        "hipnuc,/dev/ttyIMU,921600",
+        "yesense,/dev/ttyIMU_YESENSE_1,921600"});
 
     imu_pub_ = create_publisher<sensor_msgs::msg::Imu>(imu_topic_, rclcpp::SensorDataQoS());
     euler_pub_ = create_publisher<geometry_msgs::msg::Vector3Stamped>(
@@ -73,8 +82,15 @@ public:
       quaternion_norm_tolerance_ = 0.1;
     }
 
-    backend_ = create_backend(driver_, port_, baudrate_, get_logger());
-    if (!backend_ || !backend_->open()) {
+    if (driver_ == "auto" || port_ == "auto") {
+      select_backend_from_candidates();
+    } else {
+      backend_ = create_backend(driver_, port_, baudrate_, get_logger());
+      if (backend_ && !backend_->open()) {
+        backend_.reset();
+      }
+    }
+    if (!backend_) {
       RCLCPP_ERROR(
         get_logger(), "IMU node did not start: driver=%s port=%s",
         driver_.c_str(), port_.c_str());
@@ -107,6 +123,68 @@ public:
   }
 
 private:
+  static int port_priority(const std::string & port)
+  {
+    static const std::regex suffix("_([0-9]+)$");
+    std::smatch match;
+    if (!std::regex_search(port, match, suffix)) {
+      return 0;
+    }
+    try {
+      return std::stoi(match[1].str()) + 1;
+    } catch (const std::exception &) {
+      return 0;
+    }
+  }
+
+  void select_backend_from_candidates()
+  {
+    std::vector<std::string> candidates = imu_candidates_;
+    std::stable_sort(candidates.begin(), candidates.end(), [](const std::string & left,
+      const std::string & right) {
+      const auto port_from_entry = [](const std::string & entry) {
+        const auto first = entry.find(',');
+        const auto second = entry.find(',', first == std::string::npos ? first : first + 1);
+        return first == std::string::npos ? std::string{} :
+          entry.substr(first + 1, second == std::string::npos ? std::string::npos : second - first - 1);
+      };
+      return port_priority(port_from_entry(left)) < port_priority(port_from_entry(right));
+    });
+
+    for (const auto & entry : candidates) {
+      std::stringstream fields(entry);
+      std::string candidate_driver;
+      std::string candidate_port;
+      std::string candidate_baudrate;
+      if (!std::getline(fields, candidate_driver, ',') ||
+        !std::getline(fields, candidate_port, ',') ||
+        !std::getline(fields, candidate_baudrate, ','))
+      {
+        RCLCPP_WARN(get_logger(), "ignoring malformed imu_candidates entry '%s'", entry.c_str());
+        continue;
+      }
+
+      try {
+        const int baudrate = std::stoi(candidate_baudrate);
+        auto candidate = create_backend(candidate_driver, candidate_port, baudrate, get_logger());
+        if (candidate && candidate->open()) {
+          driver_ = candidate_driver;
+          port_ = candidate_port;
+          baudrate_ = baudrate;
+          backend_ = std::move(candidate);
+          RCLCPP_INFO(
+            get_logger(), "selected IMU candidate driver=%s port=%s baudrate=%d",
+            driver_.c_str(), port_.c_str(), baudrate_);
+          return;
+        }
+      } catch (const std::exception & error) {
+        RCLCPP_WARN(
+          get_logger(), "ignoring imu_candidates entry '%s': %s", entry.c_str(), error.what());
+      }
+    }
+    RCLCPP_ERROR(get_logger(), "no usable IMU candidate found in imu_candidates");
+  }
+
   void read_loop()
   {
     while (rclcpp::ok() && running_) {
@@ -211,6 +289,7 @@ private:
   bool magnetic_enabled_{false};
   bool temperature_enabled_{false};
   bool pressure_enabled_{false};
+  std::vector<std::string> imu_candidates_;
   std::uint64_t invalid_quaternion_count_{0};
   bool startup_ok_{false};
   bool first_sample_logged_{false};
