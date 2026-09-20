@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -52,6 +53,7 @@ public:
     magnetic_enabled_ = declare_parameter<bool>("magnetic_enabled", false);
     temperature_enabled_ = declare_parameter<bool>("temperature_enabled", false);
     pressure_enabled_ = declare_parameter<bool>("pressure_enabled", false);
+    axis_mapping_ = declare_parameter<std::string>("axis_mapping", "y,-x,z");
     imu_candidates_ = declare_parameter<std::vector<std::string>>(
       "imu_candidates",
       std::vector<std::string>{
@@ -204,6 +206,7 @@ private:
         }
         continue;
       }
+      transform_sample_to_robot_frame(sample);
       if (!valid_quaternion(sample.imu.orientation)) {
         ++invalid_quaternion_count_;
         const std::string dropped_count = std::to_string(invalid_quaternion_count_);
@@ -253,6 +256,55 @@ private:
     sample.pressure.header.frame_id = frame_id_;
   }
 
+  void transform_sample_to_robot_frame(ImuSample & sample) const
+  {
+    if (axis_mapping_ == "y,-x,z") {
+      const auto rotate = [](double x, double y, double z) {
+        return std::array<double, 3>{y, -x, z};
+      };
+
+      const auto acceleration = rotate(
+        sample.imu.linear_acceleration.x,
+        sample.imu.linear_acceleration.y,
+        sample.imu.linear_acceleration.z);
+      sample.imu.linear_acceleration.x = acceleration[0];
+      sample.imu.linear_acceleration.y = acceleration[1];
+      sample.imu.linear_acceleration.z = acceleration[2];
+
+      const auto angular_velocity = rotate(
+        sample.imu.angular_velocity.x,
+        sample.imu.angular_velocity.y,
+        sample.imu.angular_velocity.z);
+      sample.imu.angular_velocity.x = angular_velocity[0];
+      sample.imu.angular_velocity.y = angular_velocity[1];
+      sample.imu.angular_velocity.z = angular_velocity[2];
+
+      const auto magnetic = rotate(
+        sample.magnetic.magnetic_field.x,
+        sample.magnetic.magnetic_field.y,
+        sample.magnetic.magnetic_field.z);
+      sample.magnetic.magnetic_field.x = magnetic[0];
+      sample.magnetic.magnetic_field.y = magnetic[1];
+      sample.magnetic.magnetic_field.z = magnetic[2];
+
+      // q_robot = q_imu * q_(imu->robot), a +90 degree Z rotation here.
+      constexpr double kHalfSqrtTwo = 0.70710678118654752440;
+      const auto input = sample.imu.orientation;
+      sample.imu.orientation.w = (input.w - input.z) * kHalfSqrtTwo;
+      sample.imu.orientation.x = (input.x + input.y) * kHalfSqrtTwo;
+      sample.imu.orientation.y = (-input.x + input.y) * kHalfSqrtTwo;
+      sample.imu.orientation.z = (input.w + input.z) * kHalfSqrtTwo;
+      return;
+    }
+
+    if (axis_mapping_ != "identity") {
+      RCLCPP_WARN_ONCE(
+        get_logger(),
+        "unsupported axis_mapping='%s'; using identity mapping",
+        axis_mapping_.c_str());
+    }
+  }
+
   double quaternion_norm(const geometry_msgs::msg::Quaternion & quaternion) const
   {
     return std::sqrt(
@@ -283,6 +335,7 @@ private:
   std::string magnetic_topic_;
   std::string temperature_topic_;
   std::string pressure_topic_;
+  std::string axis_mapping_;
   bool imu_enabled_{true};
   double quaternion_norm_tolerance_{0.1};
   bool euler_enabled_{false};

@@ -11,6 +11,8 @@ imu_module:
     magnetic_topic: /magnetic_data
     temperature_topic: /temp_data
     pressure_topic: /pressure_data
+    # HiPNUC installation already matches the robot coordinate system.
+    axis_mapping: "identity"
     imu_enabled: true
     quaternion_norm_tolerance: 0.1
     euler_enabled: false
