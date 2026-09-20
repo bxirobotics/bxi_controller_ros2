@@ -89,6 +89,39 @@ jobs:
               -Wall -Wextra -Wpedantic
           "
 
+      - name: Install RKNN Conversion Tools
+        run: |
+          python3 -m pip install --no-cache-dir torch==2.4.0
+          python3 -m pip install --no-cache-dir \
+            rknn-toolkit2==2.3.2 \
+            onnx==1.16.1 numpy==1.26.4 \
+            onnxruntime==1.23.2 opencv-python==4.10.0.84
+
+      - name: Build RK3588 Models
+        run: |
+          python3 tools/build_rknn_release.py \
+            --mods "${PACKAGE_TARGET_PATH}/share/bxi_example_py_elf3/mods"
+          python3 tools/build_rknn_release.py \
+            --mods "${PACKAGE_TARGET_PATH}/share/bxi_example_py_elf3/mods" --check
+
+      - name: Bundle RKNN Lite and Native Runtime
+        run: |
+          RKNN_DIR="${PACKAGE_TARGET_PATH}/runtime/rknn"
+          mkdir -p "$RKNN_DIR"
+          python3 -m pip download --no-deps --only-binary=:all: \
+            --dest "$RKNN_DIR" rknn-toolkit-lite2==2.3.2
+          curl --http1.1 -fsSL --retry 3 --connect-timeout 20 --max-time 120 \
+            --speed-time 30 --speed-limit 1024 \
+            https://raw.githubusercontent.com/airockchip/rknn-toolkit2/v2.3.2/rknpu2/runtime/Linux/librknn_api/aarch64/librknnrt.so \
+            -o "$RKNN_DIR/librknnrt.so"
+          curl --http1.1 -fsSL --retry 3 --connect-timeout 20 --max-time 120 \
+            --speed-time 30 --speed-limit 1024 \
+            https://raw.githubusercontent.com/airockchip/rknn-toolkit2/v2.3.2/LICENSE \
+            -o "$RKNN_DIR/LICENSE"
+          cd "$RKNN_DIR"
+          echo 'd31fc19c85b85f6091b2bd0f6af9d962d5264a4e410bfb536402ec92bac738e8  librknnrt.so' | sha256sum -c -
+          echo '821e80c95e6838308c133915660b1a6ae78bb8d079b2cbbd46a02dae61192d33  rknn_toolkit_lite2-2.3.2-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl' | sha256sum -c -
+
       - name: Stage Runtime Dependency Installer
         run: |
           bash -n deploy_environment.sh
@@ -108,11 +141,20 @@ jobs:
       - name: Package Artifact
         run: |
           ARTIFACT="${PACKAGE_NAME}_${{ env.tag_name }}.tar.gz"
-          tar -czvf "${ARTIFACT}" -C /opt/bxi "${PACKAGE_NAME}"
+          tar --exclude='*.build.lock' -czvf "${ARTIFACT}" -C /opt/bxi "${PACKAGE_NAME}"
           tar -tzf "${ARTIFACT}" | grep -Fx \
             "${PACKAGE_NAME}/deploy_environment.sh"
           tar -tzf "${ARTIFACT}" | grep -Fx \
             "${PACKAGE_NAME}/requirement.txt"
+          MODEL_ROOT="${PACKAGE_TARGET_PATH}/share/bxi_example_py_elf3/mods"
+          MODEL_COUNT="$(find "$MODEL_ROOT" -type f -name '*.onnx' | wc -l)"
+          test "$MODEL_COUNT" -gt 0
+          test "$(tar -tzf "${ARTIFACT}" | grep -c '\.rknn$')" -eq "$MODEL_COUNT"
+          test "$(tar -tzf "${ARTIFACT}" | grep -c '\.rknn.build.json$')" -eq "$MODEL_COUNT"
+          tar -tzf "${ARTIFACT}" | grep -Fx \
+            "${PACKAGE_NAME}/runtime/rknn/librknnrt.so"
+          tar -tzf "${ARTIFACT}" | grep -Fx \
+            "${PACKAGE_NAME}/runtime/rknn/LICENSE"
           sha256sum "${ARTIFACT}" > "${ARTIFACT}.sha256"
 
       - name: Prepare Release Artifact
