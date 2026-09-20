@@ -40,11 +40,19 @@ def generate_launch_description():
         port = str(parameters.get("port", "")).strip()
         baudrate = int(parameters.get("baudrate", 921600))
         if driver and port:
-            candidates.append(f"{driver},{port},{baudrate}")
+            axis_mapping = str(parameters.get("axis_mapping", "identity"))
+            frequency = float(parameters.get("imu_frequency_hz", 200.0))
+            timeout_multiplier = float(parameters.get("imu_timeout_multiplier", 1.5))
+            candidates.append(
+                f"{driver}|{port}|{baudrate}|{axis_mapping}|{frequency}|{timeout_multiplier}"
+            )
         if not common_parameters:
             common_parameters = {
                 key: value for key, value in parameters.items()
-                if key not in {"driver", "port", "baudrate"}
+                if key not in {
+                    "driver", "port", "baudrate", "axis_mapping",
+                    "imu_frequency_hz", "imu_timeout_multiplier",
+                }
             }
 
     if not candidates:

@@ -61,8 +61,8 @@ public:
     imu_candidates_ = declare_parameter<std::vector<std::string>>(
       "imu_candidates",
       std::vector<std::string>{
-        "hipnuc,/dev/ttyIMU,921600",
-        "yesense,/dev/ttyIMU_YESENSE_1,921600"});
+        "hipnuc|/dev/ttyIMU|921600|identity|500.0|2.5",
+        "yesense|/dev/ttyIMU_YESENSE_1|921600|y,-x,z|200.0|2.5"});
 
     imu_pub_ = create_publisher<sensor_msgs::msg::Imu>(imu_topic_, rclcpp::SensorDataQoS());
     euler_pub_ = create_publisher<geometry_msgs::msg::Vector3Stamped>(
@@ -99,6 +99,15 @@ public:
     if (driver_ == "auto" || port_ == "auto") {
       select_backend_from_candidates();
     } else {
+      for (const auto & entry : imu_candidates_) {
+        CandidateConfig candidate_config;
+        if (parse_candidate(entry, candidate_config) &&
+          candidate_config.driver == driver_ && candidate_config.port == port_)
+        {
+          apply_candidate_config(candidate_config);
+          break;
+        }
+      }
       backend_ = create_backend(driver_, port_, baudrate_, get_logger());
       if (backend_ && !backend_->open()) {
         backend_.reset();
@@ -110,6 +119,7 @@ public:
         driver_.c_str(), port_.c_str());
       return;
     }
+    sanitize_timing_parameters();
 
     RCLCPP_INFO(
       get_logger(),
@@ -147,6 +157,60 @@ public:
   }
 
 private:
+  struct CandidateConfig
+  {
+    std::string driver;
+    std::string port;
+    int baudrate{921600};
+    std::string axis_mapping{"identity"};
+    double frequency_hz{200.0};
+    double timeout_multiplier{1.5};
+  };
+
+  static bool parse_candidate(const std::string & entry, CandidateConfig & candidate)
+  {
+    std::stringstream fields(entry);
+    std::string baudrate;
+    std::string frequency;
+    std::string timeout_multiplier;
+    if (!std::getline(fields, candidate.driver, '|') ||
+      !std::getline(fields, candidate.port, '|') ||
+      !std::getline(fields, baudrate, '|') ||
+      !std::getline(fields, candidate.axis_mapping, '|') ||
+      !std::getline(fields, frequency, '|') ||
+      !std::getline(fields, timeout_multiplier, '|'))
+    {
+      return false;
+    }
+    try {
+      candidate.baudrate = std::stoi(baudrate);
+      candidate.frequency_hz = std::stod(frequency);
+      candidate.timeout_multiplier = std::stod(timeout_multiplier);
+    } catch (const std::exception &) {
+      return false;
+    }
+    return !candidate.driver.empty() && !candidate.port.empty();
+  }
+
+  void apply_candidate_config(const CandidateConfig & candidate)
+  {
+    axis_mapping_ = candidate.axis_mapping;
+    imu_frequency_hz_ = candidate.frequency_hz;
+    imu_timeout_multiplier_ = candidate.timeout_multiplier;
+  }
+
+  void sanitize_timing_parameters()
+  {
+    if (!std::isfinite(imu_frequency_hz_) || imu_frequency_hz_ <= 0.0) {
+      RCLCPP_WARN(get_logger(), "invalid imu_frequency_hz; using 200 Hz");
+      imu_frequency_hz_ = 200.0;
+    }
+    if (!std::isfinite(imu_timeout_multiplier_) || imu_timeout_multiplier_ < 1.0) {
+      RCLCPP_WARN(get_logger(), "invalid imu_timeout_multiplier; using 1.5");
+      imu_timeout_multiplier_ = 1.5;
+    }
+  }
+
   static int port_priority(const std::string & port)
   {
     static const std::regex suffix("_([0-9]+)$");
@@ -167,34 +231,28 @@ private:
     std::stable_sort(candidates.begin(), candidates.end(), [](const std::string & left,
       const std::string & right) {
       const auto port_from_entry = [](const std::string & entry) {
-        const auto first = entry.find(',');
-        const auto second = entry.find(',', first == std::string::npos ? first : first + 1);
-        return first == std::string::npos ? std::string{} :
-          entry.substr(first + 1, second == std::string::npos ? std::string::npos : second - first - 1);
+        CandidateConfig candidate;
+        return parse_candidate(entry, candidate) ? candidate.port : std::string{};
       };
       return port_priority(port_from_entry(left)) < port_priority(port_from_entry(right));
     });
 
     for (const auto & entry : candidates) {
-      std::stringstream fields(entry);
-      std::string candidate_driver;
-      std::string candidate_port;
-      std::string candidate_baudrate;
-      if (!std::getline(fields, candidate_driver, ',') ||
-        !std::getline(fields, candidate_port, ',') ||
-        !std::getline(fields, candidate_baudrate, ','))
+      CandidateConfig candidate_config;
+      if (!parse_candidate(entry, candidate_config))
       {
         RCLCPP_WARN(get_logger(), "ignoring malformed imu_candidates entry '%s'", entry.c_str());
         continue;
       }
 
       try {
-        const int baudrate = std::stoi(candidate_baudrate);
-        auto candidate = create_backend(candidate_driver, candidate_port, baudrate, get_logger());
+        auto candidate = create_backend(
+          candidate_config.driver, candidate_config.port, candidate_config.baudrate, get_logger());
         if (candidate && candidate->open()) {
-          driver_ = candidate_driver;
-          port_ = candidate_port;
-          baudrate_ = baudrate;
+          driver_ = candidate_config.driver;
+          port_ = candidate_config.port;
+          baudrate_ = candidate_config.baudrate;
+          apply_candidate_config(candidate_config);
           backend_ = std::move(candidate);
           RCLCPP_INFO(
             get_logger(), "selected IMU candidate driver=%s port=%s baudrate=%d",
