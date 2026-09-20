@@ -39,13 +39,8 @@ case "$imu_data_wait_seconds" in
 esac
 
 bxi_imu_prefix="$(ros2 pkg prefix bxi_imu 2>/dev/null || true)"
-hardware_prefix="$(ros2 pkg prefix hardware_elf3 2>/dev/null || true)"
 bxi_imu_executable="${bxi_imu_prefix:+$bxi_imu_prefix/lib/bxi_imu/imu_node}"
-log "bxi_imu_prefix=$bxi_imu_prefix"
-log "bxi_imu_module_config_dir=${bxi_imu_prefix:+$bxi_imu_prefix/share/bxi_imu/modules}"
-log "bxi_imu_executable=$bxi_imu_executable"
-log "hardware_elf3_prefix=$hardware_prefix"
-log "hardware_elf3_executable=${hardware_prefix:+$hardware_prefix/lib/hardware_elf3/hardware_elf3}"
+log "bxi_imu package found"
 
 if [ -z "$bxi_imu_prefix" ] || [ ! -d "${bxi_imu_prefix:+$bxi_imu_prefix/share/bxi_imu/modules}" ] ||
   [ ! -x "$bxi_imu_executable" ]; then
@@ -75,12 +70,11 @@ if [ "$hardware_node_seen" -ne 1 ]; then
 fi
 
 imu_parameter="$(ros2 param get "$hardware_node" hardware_config/imu 2>&1 || true)"
-log "hardware_config/imu=$imu_parameter"
+log "hardware IMU parameter: $imu_parameter"
 
 # A publisher can exist even when hardware IMU reading is disabled. Decide
 # whether the hardware path is usable only after receiving an actual sample.
-log "topic discovery result for $imu_topic:"
-ros2 topic info -v "$imu_topic" 2>&1 || true
+log "checking for a real message on $imu_topic"
 
 sample_file="$(mktemp /tmp/bxi_imu_sample.XXXXXX)"
 sample_received=0
@@ -99,7 +93,6 @@ done
 
 if [ "$sample_received" -eq 1 ]; then
   log "hardware IMU data received; keeping the existing publisher and not starting bxi_imu"
-  sed 's/^/[imu sample] /' "$sample_file"
   rm -f "$sample_file"
   exit 0
 fi

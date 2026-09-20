@@ -101,9 +101,17 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "using IMU backend '%s', publishing %s; quaternion norm validation "
-      "enabled with tolerance %.3f (accepted range %.3f..%.3f)",
-      backend_->name().c_str(), imu_topic_.c_str(), quaternion_norm_tolerance_,
+      "\n========== ACTIVE IMU ==========\n"
+      "driver       : %s\n"
+      "port         : %s\n"
+      "baudrate     : %d\n"
+      "imu_topic    : %s\n"
+      "frame_id     : %s\n"
+      "axis_mapping : %s\n"
+      "quat check   : enabled, norm %.3f..%.3f\n"
+      "================================",
+      backend_->name().c_str(), port_.c_str(), baudrate_, imu_topic_.c_str(),
+      frame_id_.c_str(), axis_mapping_.c_str(),
       1.0 - quaternion_norm_tolerance_, 1.0 + quaternion_norm_tolerance_);
     running_ = true;
     startup_ok_ = true;
