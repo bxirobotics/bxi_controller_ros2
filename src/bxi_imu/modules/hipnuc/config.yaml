@@ -14,7 +14,8 @@ imu_module:
     # HiPNUC installation already matches the robot coordinate system.
     axis_mapping: "identity"
     imu_frequency_hz: 500.0
-    imu_timeout_tolerance_ms: 1.0
+    # 500 Hz => 2 ms period; timeout threshold is 5 ms (2.5 periods).
+    imu_timeout_multiplier: 2.5
     imu_enabled: true
     quaternion_norm_tolerance: 0.1
     euler_enabled: false

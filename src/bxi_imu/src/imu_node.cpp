@@ -57,7 +57,7 @@ public:
     pressure_enabled_ = declare_parameter<bool>("pressure_enabled", false);
     axis_mapping_ = declare_parameter<std::string>("axis_mapping", "y,-x,z");
     imu_frequency_hz_ = declare_parameter<double>("imu_frequency_hz", 200.0);
-    imu_timeout_tolerance_ms_ = declare_parameter<double>("imu_timeout_tolerance_ms", 1.0);
+    imu_timeout_multiplier_ = declare_parameter<double>("imu_timeout_multiplier", 1.5);
     imu_candidates_ = declare_parameter<std::vector<std::string>>(
       "imu_candidates",
       std::vector<std::string>{
@@ -91,9 +91,9 @@ public:
       RCLCPP_WARN(get_logger(), "invalid imu_frequency_hz; using 200 Hz");
       imu_frequency_hz_ = 200.0;
     }
-    if (!std::isfinite(imu_timeout_tolerance_ms_) || imu_timeout_tolerance_ms_ < 0.0) {
-      RCLCPP_WARN(get_logger(), "invalid imu_timeout_tolerance_ms; using 1 ms");
-      imu_timeout_tolerance_ms_ = 1.0;
+    if (!std::isfinite(imu_timeout_multiplier_) || imu_timeout_multiplier_ < 1.0) {
+      RCLCPP_WARN(get_logger(), "invalid imu_timeout_multiplier; using 1.5");
+      imu_timeout_multiplier_ = 1.5;
     }
 
     if (driver_ == "auto" || port_ == "auto") {
@@ -120,12 +120,12 @@ public:
       "imu_topic    : %s\n"
       "frame_id     : %s\n"
       "axis_mapping : %s\n"
-      "frequency    : %.1f Hz (period %.3f ms, timeout %.3f ms)\n"
+      "frequency    : %.1f Hz (period %.3f ms, timeout %.2fx / %.3f ms)\n"
       "quat check   : enabled, norm %.3f..%.3f\n"
       "================================",
       backend_->name().c_str(), port_.c_str(), baudrate_, imu_topic_.c_str(),
       frame_id_.c_str(), axis_mapping_.c_str(), imu_frequency_hz_,
-      expected_period_ms(), timeout_period_ms(),
+      expected_period_ms(), imu_timeout_multiplier_, timeout_period_ms(),
       1.0 - quaternion_norm_tolerance_, 1.0 + quaternion_norm_tolerance_);
     running_ = true;
     startup_ok_ = true;
@@ -336,12 +336,12 @@ private:
 
   double timeout_period_ms() const
   {
-    return expected_period_ms() + imu_timeout_tolerance_ms_;
+    return expected_period_ms() * imu_timeout_multiplier_;
   }
 
   void check_imu_timeout(bool sample_received)
   {
-    if (imu_frequency_hz_ <= 0.0 || imu_timeout_tolerance_ms_ < 0.0) {
+    if (imu_frequency_hz_ <= 0.0 || imu_timeout_multiplier_ < 1.0) {
       return;
     }
 
@@ -413,7 +413,7 @@ private:
   std::string pressure_topic_;
   std::string axis_mapping_;
   double imu_frequency_hz_{200.0};
-  double imu_timeout_tolerance_ms_{1.0};
+  double imu_timeout_multiplier_{1.5};
   bool imu_enabled_{true};
   double quaternion_norm_tolerance_{0.1};
   bool euler_enabled_{false};
