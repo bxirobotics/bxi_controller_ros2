@@ -16,6 +16,10 @@ imu_module:
     imu_frequency_hz: 200.0
     # 200 Hz => 5 ms period; timeout threshold is 12.5 ms (2.5 periods).
     imu_timeout_multiplier: 2.5
+    # Keep one CSV for each IMU process startup and retain the newest 10 files.
+    imu_record_enabled: true
+    imu_record_dir: /var/log/bxi_log/imu/data
+    imu_record_max_files: 10
     imu_enabled: true
     quaternion_norm_tolerance: 0.1
     euler_enabled: false

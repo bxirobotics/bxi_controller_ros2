@@ -17,6 +17,10 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -58,6 +62,10 @@ public:
     axis_mapping_ = declare_parameter<std::string>("axis_mapping", "y,-x,z");
     imu_frequency_hz_ = declare_parameter<double>("imu_frequency_hz", 200.0);
     imu_timeout_multiplier_ = declare_parameter<double>("imu_timeout_multiplier", 1.5);
+    imu_record_enabled_ = declare_parameter<bool>("imu_record_enabled", false);
+    imu_record_dir_ = declare_parameter<std::string>(
+      "imu_record_dir", "/var/log/bxi_log/imu/data");
+    imu_record_max_files_ = declare_parameter<int>("imu_record_max_files", 10);
     imu_candidates_ = declare_parameter<std::vector<std::string>>(
       "imu_candidates",
       std::vector<std::string>{
@@ -137,6 +145,7 @@ public:
       frame_id_.c_str(), axis_mapping_.c_str(), imu_frequency_hz_,
       expected_period_ms(), imu_timeout_multiplier_, timeout_period_ms(),
       1.0 - quaternion_norm_tolerance_, 1.0 + quaternion_norm_tolerance_);
+    open_imu_recorder();
     running_ = true;
     startup_ok_ = true;
     reader_thread_ = std::thread([this]() {read_loop();});
@@ -154,6 +163,7 @@ public:
     if (reader_thread_.joinable()) {
       reader_thread_.join();
     }
+    close_imu_recorder();
   }
 
 private:
@@ -304,6 +314,7 @@ private:
           dropped_count.c_str());
         continue;
       }
+      record_sample(sample);
       stamp_and_frame(sample);
       if (imu_enabled_) {
         imu_pub_->publish(sample.imu);
@@ -326,6 +337,146 @@ private:
           get_logger(), "received first valid IMU frame from %s",
           port_.c_str());
       }
+    }
+  }
+
+  static std::string local_timestamp()
+  {
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t time = std::chrono::system_clock::to_time_t(now);
+    std::tm local_time{};
+#if defined(_WIN32)
+    localtime_s(&local_time, &time);
+#else
+    localtime_r(&time, &local_time);
+#endif
+    std::ostringstream output;
+    output << std::put_time(&local_time, "%Y%m%d_%H%M%S");
+    return output.str();
+  }
+
+  void open_imu_recorder()
+  {
+    if (!imu_record_enabled_) {
+      return;
+    }
+    if (imu_record_max_files_ < 1) {
+      RCLCPP_WARN(get_logger(), "invalid imu_record_max_files; recording disabled");
+      return;
+    }
+
+    std::error_code error;
+    std::filesystem::create_directories(imu_record_dir_, error);
+    if (error) {
+      RCLCPP_WARN(
+        get_logger(), "cannot create IMU record directory %s: %s; recording disabled",
+        imu_record_dir_.c_str(), error.message().c_str());
+      return;
+    }
+    record_file_prefix_ = "imu_data_" + local_timestamp();
+    rotate_imu_record_file();
+    if (record_file_.is_open()) {
+      RCLCPP_INFO(
+      get_logger(),
+        "IMU CSV recording enabled: dir=%s one_file_per_start keep=%d files",
+        imu_record_dir_.c_str(), imu_record_max_files_);
+    }
+  }
+
+  void rotate_imu_record_file()
+  {
+    if (record_file_.is_open()) {
+      record_file_.flush();
+      record_file_.close();
+    }
+
+    ++record_file_index_;
+    std::ostringstream filename;
+    filename << record_file_prefix_ << "_" << std::setfill('0') << std::setw(4)
+             << record_file_index_ << ".csv";
+    current_record_path_ = std::filesystem::path(imu_record_dir_) / filename.str();
+    record_file_.open(current_record_path_, std::ios::out | std::ios::trunc);
+    if (!record_file_.is_open()) {
+      RCLCPP_WARN(
+        get_logger(), "cannot open IMU record file %s; recording disabled",
+        current_record_path_.c_str());
+      imu_record_enabled_ = false;
+      return;
+    }
+    record_file_ << "# driver=" << backend_->name() << "\n"
+                 << "# port=" << port_ << "\n"
+                 << "# axis_mapping=" << axis_mapping_ << "\n"
+                 << "# frequency_hz=" << imu_frequency_hz_ << "\n"
+                 << "receive_time_ns,ros_stamp_sec,ros_stamp_nanosec,"
+                 << "quaternion_w,quaternion_x,quaternion_y,quaternion_z,quaternion_norm,"
+                 << "angular_velocity_x,angular_velocity_y,angular_velocity_z,"
+                 << "linear_acceleration_x,linear_acceleration_y,linear_acceleration_z,"
+                 << "arrival_gap_ms\n";
+    record_file_.flush();
+    recorded_rows_since_flush_ = 0;
+    prune_imu_record_files();
+  }
+
+  void prune_imu_record_files()
+  {
+    std::vector<std::filesystem::path> files;
+    std::error_code error;
+    for (const auto & entry : std::filesystem::directory_iterator(imu_record_dir_, error)) {
+      if (error) {
+        break;
+      }
+      if (entry.is_regular_file() && entry.path().filename().string().rfind("imu_data_", 0) == 0 &&
+        entry.path().extension() == ".csv")
+      {
+        files.push_back(entry.path());
+      }
+    }
+    std::sort(files.begin(), files.end());
+    while (static_cast<int>(files.size()) > imu_record_max_files_) {
+      std::filesystem::remove(files.front(), error);
+      files.erase(files.begin());
+    }
+  }
+
+  void record_sample(const ImuSample & sample)
+  {
+    if (!imu_record_enabled_ || !record_file_.is_open()) {
+      return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    double arrival_gap_ms = 0.0;
+    if (last_record_time_.has_value()) {
+      arrival_gap_ms = std::chrono::duration<double, std::milli>(
+        now - *last_record_time_).count();
+    }
+    last_record_time_ = now;
+
+    const auto & message = sample.imu;
+    const double norm = quaternion_norm(message.orientation);
+    std::ostringstream row;
+    row << std::setprecision(12)
+        << std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count() << ","
+        << message.header.stamp.sec << "," << message.header.stamp.nanosec << ","
+        << message.orientation.w << "," << message.orientation.x << ","
+        << message.orientation.y << "," << message.orientation.z << "," << norm << ","
+        << message.angular_velocity.x << "," << message.angular_velocity.y << ","
+        << message.angular_velocity.z << "," << message.linear_acceleration.x << ","
+        << message.linear_acceleration.y << "," << message.linear_acceleration.z << ","
+        << arrival_gap_ms << "\n";
+    const std::string content = row.str();
+    record_file_ << content;
+    if (++recorded_rows_since_flush_ >= 20) {
+      record_file_.flush();
+      recorded_rows_since_flush_ = 0;
+    }
+  }
+
+  void close_imu_recorder()
+  {
+    if (record_file_.is_open()) {
+      record_file_.flush();
+      record_file_.close();
     }
   }
 
@@ -472,6 +623,9 @@ private:
   std::string axis_mapping_;
   double imu_frequency_hz_{200.0};
   double imu_timeout_multiplier_{1.5};
+  bool imu_record_enabled_{false};
+  std::string imu_record_dir_{"/var/log/bxi_log/imu/data"};
+  int imu_record_max_files_{10};
   bool imu_enabled_{true};
   double quaternion_norm_tolerance_{0.1};
   bool euler_enabled_{false};
@@ -485,6 +639,12 @@ private:
   std::atomic<bool> runtime_failed_{false};
   std::optional<std::chrono::steady_clock::time_point> last_sample_time_;
   bool timeout_reported_{false};
+  std::ofstream record_file_;
+  std::string record_file_prefix_;
+  std::filesystem::path current_record_path_;
+  int record_file_index_{0};
+  std::uint64_t recorded_rows_since_flush_{0};
+  std::optional<std::chrono::steady_clock::time_point> last_record_time_;
 
   BackendPtr backend_;
   std::atomic<bool> running_{false};
