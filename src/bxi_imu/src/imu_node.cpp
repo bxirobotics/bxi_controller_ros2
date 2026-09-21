@@ -16,13 +16,16 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <deque>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -299,7 +302,10 @@ private:
       }
       check_imu_timeout(true);
       transform_sample_to_robot_frame(sample);
-      if (!valid_quaternion(sample.imu.orientation)) {
+      const bool quaternion_valid = valid_quaternion(sample.imu.orientation);
+      record_sample(
+        sample, quaternion_valid, quaternion_valid ? "" : "invalid_quaternion");
+      if (!quaternion_valid) {
         ++invalid_quaternion_count_;
         const std::string dropped_count = std::to_string(invalid_quaternion_count_);
         RCLCPP_WARN_THROTTLE(
@@ -314,7 +320,6 @@ private:
           dropped_count.c_str());
         continue;
       }
-      record_sample(sample);
       stamp_and_frame(sample);
       if (imu_enabled_) {
         imu_pub_->publish(sample.imu);
@@ -383,6 +388,14 @@ private:
     }
   }
 
+  struct RecordedSample
+  {
+    ImuSample sample;
+    double arrival_gap_ms{0.0};
+    bool quaternion_valid{false};
+    std::string drop_reason;
+  };
+
   void rotate_imu_record_file()
   {
     if (record_file_.is_open()) {
@@ -408,13 +421,23 @@ private:
                  << "# axis_mapping=" << axis_mapping_ << "\n"
                  << "# frequency_hz=" << imu_frequency_hz_ << "\n"
                  << "receive_time_ns,ros_stamp_sec,ros_stamp_nanosec,"
+                 << "quaternion_valid,drop_reason,"
                  << "quaternion_w,quaternion_x,quaternion_y,quaternion_z,quaternion_norm,"
+                 << "euler_roll,euler_pitch,euler_yaw,"
                  << "angular_velocity_x,angular_velocity_y,angular_velocity_z,"
                  << "linear_acceleration_x,linear_acceleration_y,linear_acceleration_z,"
                  << "arrival_gap_ms\n";
     record_file_.flush();
+    if (record_file_.fail()) {
+      RCLCPP_WARN(get_logger(), "cannot write IMU record header; recording disabled");
+      record_file_.close();
+      imu_record_enabled_ = false;
+      return;
+    }
     recorded_rows_since_flush_ = 0;
     prune_imu_record_files();
+    recording_running_ = true;
+    record_writer_thread_ = std::thread([this]() {record_writer_loop();});
   }
 
   void prune_imu_record_files()
@@ -438,9 +461,10 @@ private:
     }
   }
 
-  void record_sample(const ImuSample & sample)
+  void record_sample(
+    const ImuSample & sample, bool quaternion_valid, const char * drop_reason)
   {
-    if (!imu_record_enabled_ || !record_file_.is_open()) {
+    if (!imu_record_enabled_ || !recording_running_) {
       return;
     }
     const auto now = std::chrono::steady_clock::now();
@@ -451,29 +475,88 @@ private:
     }
     last_record_time_ = now;
 
-    const auto & message = sample.imu;
+    {
+      std::lock_guard<std::mutex> lock(record_queue_mutex_);
+      if (record_queue_.size() >= record_queue_capacity_) {
+        ++dropped_record_count_;
+        return;
+      }
+      record_queue_.push_back(
+        RecordedSample{sample, arrival_gap_ms, quaternion_valid, drop_reason});
+    }
+    record_queue_condition_.notify_one();
+  }
+
+  void record_writer_loop()
+  {
+    while (true) {
+      RecordedSample recorded_sample;
+      {
+        std::unique_lock<std::mutex> lock(record_queue_mutex_);
+        record_queue_condition_.wait(lock, [this]() {
+          return !record_queue_.empty() || !recording_running_;
+        });
+        if (record_queue_.empty() && !recording_running_) {
+          return;
+        }
+        recorded_sample = std::move(record_queue_.front());
+        record_queue_.pop_front();
+      }
+      write_recorded_sample(recorded_sample);
+    }
+  }
+
+  void write_recorded_sample(const RecordedSample & recorded_sample)
+  {
+    if (!record_file_.is_open()) {
+      return;
+    }
+    const auto & message = recorded_sample.sample.imu;
     const double norm = quaternion_norm(message.orientation);
     std::ostringstream row;
     row << std::setprecision(12)
         << std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::system_clock::now().time_since_epoch()).count() << ","
         << message.header.stamp.sec << "," << message.header.stamp.nanosec << ","
+        << (recorded_sample.quaternion_valid ? 1 : 0) << ","
+        << recorded_sample.drop_reason << ","
         << message.orientation.w << "," << message.orientation.x << ","
         << message.orientation.y << "," << message.orientation.z << "," << norm << ","
+        << recorded_sample.sample.euler.vector.x << ","
+        << recorded_sample.sample.euler.vector.y << ","
+        << recorded_sample.sample.euler.vector.z << ","
         << message.angular_velocity.x << "," << message.angular_velocity.y << ","
         << message.angular_velocity.z << "," << message.linear_acceleration.x << ","
         << message.linear_acceleration.y << "," << message.linear_acceleration.z << ","
-        << arrival_gap_ms << "\n";
+        << recorded_sample.arrival_gap_ms << "\n";
     const std::string content = row.str();
     record_file_ << content;
+    if (record_file_.fail()) {
+      RCLCPP_WARN(get_logger(), "IMU CSV write failed; disabling data recording");
+      recording_running_ = false;
+      return;
+    }
     if (++recorded_rows_since_flush_ >= 20) {
       record_file_.flush();
+      if (record_file_.fail()) {
+        RCLCPP_WARN(get_logger(), "IMU CSV flush failed; disabling data recording");
+        recording_running_ = false;
+        return;
+      }
       recorded_rows_since_flush_ = 0;
     }
   }
 
   void close_imu_recorder()
   {
+    {
+      std::lock_guard<std::mutex> lock(record_queue_mutex_);
+      recording_running_ = false;
+    }
+    record_queue_condition_.notify_one();
+    if (record_writer_thread_.joinable()) {
+      record_writer_thread_.join();
+    }
     if (record_file_.is_open()) {
       record_file_.flush();
       record_file_.close();
@@ -527,6 +610,24 @@ private:
       sample.imu.orientation.x = (input.x + input.y) * kHalfSqrtTwo;
       sample.imu.orientation.y = (-input.x + input.y) * kHalfSqrtTwo;
       sample.imu.orientation.z = (input.w + input.z) * kHalfSqrtTwo;
+
+      // Recompute Euler angles from the transformed quaternion. Roll, pitch,
+      // and yaw cannot be remapped by simply swapping their three components.
+      const auto & quaternion = sample.imu.orientation;
+      const double sin_roll = 2.0 *
+        (quaternion.w * quaternion.x + quaternion.y * quaternion.z);
+      const double cos_roll = 1.0 - 2.0 *
+        (quaternion.x * quaternion.x + quaternion.y * quaternion.y);
+      const double sin_pitch = 2.0 *
+        (quaternion.w * quaternion.y - quaternion.z * quaternion.x);
+      const double clamped_sin_pitch = std::clamp(sin_pitch, -1.0, 1.0);
+      const double sin_yaw = 2.0 *
+        (quaternion.w * quaternion.z + quaternion.x * quaternion.y);
+      const double cos_yaw = 1.0 - 2.0 *
+        (quaternion.y * quaternion.y + quaternion.z * quaternion.z);
+      sample.euler.vector.x = std::atan2(sin_roll, cos_roll);
+      sample.euler.vector.y = std::asin(clamped_sin_pitch);
+      sample.euler.vector.z = std::atan2(sin_yaw, cos_yaw);
       return;
     }
 
@@ -645,6 +746,13 @@ private:
   int record_file_index_{0};
   std::uint64_t recorded_rows_since_flush_{0};
   std::optional<std::chrono::steady_clock::time_point> last_record_time_;
+  static constexpr std::size_t record_queue_capacity_{2000};
+  std::deque<RecordedSample> record_queue_;
+  std::mutex record_queue_mutex_;
+  std::condition_variable record_queue_condition_;
+  std::atomic<bool> recording_running_{false};
+  std::uint64_t dropped_record_count_{0};
+  std::thread record_writer_thread_;
 
   BackendPtr backend_;
   std::atomic<bool> running_{false};
