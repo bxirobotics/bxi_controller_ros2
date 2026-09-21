@@ -5,6 +5,8 @@ import sys
 
 from ament_index_python.packages import get_package_share_path
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch.actions import IncludeLaunchDescription, OpaqueFunction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
@@ -102,6 +104,11 @@ def generate_launch_description():
     return LaunchDescription(
         declare_hardware_launch_arguments()
         + [
+            DeclareLaunchArgument(
+                "imu_runtime_timeout_sec",
+                default_value="0.1",
+                description="Seconds without IMU data before locked protection",
+            ),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(cameras_launch),
             ),
@@ -116,6 +123,11 @@ def generate_launch_description():
                 parameters=[
                     {"/topic_prefix": "hardware/"},
                     {"/state_machine_config": state_machine_config},
+                    {
+                        "/imu_runtime_timeout_sec": LaunchConfiguration(
+                            "imu_runtime_timeout_sec"
+                        )
+                    },
                 ],
                 emulate_tty=True,
                 arguments=[("__log_level:=debug")],
