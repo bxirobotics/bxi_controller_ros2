@@ -144,7 +144,28 @@ fi
 
 log "fallback checks passed: no message on $imu_topic; bxi_imu will apply configured IMU priority"
 log "starting bxi_imu launch so module configs are discovered"
-exec ros2 launch bxi_imu imu.launch.py \
+ros2 launch bxi_imu imu.launch.py \
   driver:="$driver" \
   port:="$device_link" \
-  baudrate:="$baudrate"
+  baudrate:="$baudrate" &
+bxi_imu_pid=$!
+
+# The hardware node may expose a publisher even when it has not produced a
+# message yet. Check the graph after starting the fallback and keep checking
+# while it runs, so two publishers cannot silently coexist on the same topic.
+while kill -0 "$bxi_imu_pid" 2>/dev/null; do
+  publisher_count="$(
+    ros2 topic info "$imu_topic" 2>/dev/null |
+      awk '/Publisher count:/ {print $3; exit}'
+  )"
+  if [[ "$publisher_count" =~ ^[0-9]+$ ]] && [ "$publisher_count" -gt 1 ]; then
+    log "publisher safety check failed: $imu_topic has $publisher_count publishers"
+    log "stopping bxi_imu fallback to prevent multiple IMU publishers"
+    kill -SIGINT "$bxi_imu_pid" 2>/dev/null || true
+    wait "$bxi_imu_pid" 2>/dev/null || true
+    exit 1
+  fi
+  sleep 1
+done
+
+wait "$bxi_imu_pid"

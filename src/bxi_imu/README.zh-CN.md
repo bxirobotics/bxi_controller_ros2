@@ -102,6 +102,47 @@ ros2 launch bxi_imu imu.launch.py \
   driver:=yesense port:=/dev/ttyIMU_YESENSE_1 baudrate:=921600
 ```
 
+### 控制 IMU CSV 记录
+
+默认是否记录由模块配置文件决定：
+
+```text
+src/bxi_imu/modules/hipnuc/config.yaml
+src/bxi_imu/modules/yesense/config.yaml
+```
+
+配置项为：
+
+```yaml
+imu_record_enabled: true
+imu_record_dir: /var/log/bxi_log/imu/data
+imu_record_max_files: 10
+```
+
+单独启动 IMU 时，可以用启动参数临时覆盖配置：
+
+```bash
+# 关闭 CSV 记录
+ros2 launch bxi_imu imu.launch.py imu_record_enabled:=false
+
+# 开启 CSV 记录
+ros2 launch bxi_imu imu.launch.py imu_record_enabled:=true
+```
+
+如果由控制程序自动拉起 `bxi_imu`，启动脚本使用模块 YAML 中的配置。
+此时需要修改当前模块的 `config.yaml`：
+
+```yaml
+imu_record_enabled: false
+```
+
+修改后重新编译并重启控制程序。CSV 数据保存在 `imu_record_dir`，启动
+日志仍保存在：
+
+```text
+/var/log/bxi_log/imu/
+```
+
 查看当前使用的设备和话题发布者：
 
 ```bash

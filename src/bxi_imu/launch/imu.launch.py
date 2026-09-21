@@ -58,11 +58,19 @@ def generate_launch_description():
     if not candidates:
         raise RuntimeError(f"No IMU module config found under {module_root}")
 
+    record_enabled_default = str(
+        common_parameters.get("imu_record_enabled", False)
+    ).lower()
+
     return LaunchDescription(
         [
             DeclareLaunchArgument("driver", default_value="auto"),
             DeclareLaunchArgument("port", default_value="auto"),
             DeclareLaunchArgument("baudrate", default_value="921600"),
+            DeclareLaunchArgument(
+                "imu_record_enabled", default_value=record_enabled_default,
+                description="Enable CSV IMU recording (true/false)",
+            ),
             Node(
                 package="bxi_imu",
                 executable="imu_node",
@@ -77,6 +85,9 @@ def generate_launch_description():
                         ),
                         "imu_candidates": candidates,
                         **common_parameters,
+                        "imu_record_enabled": ParameterValue(
+                            LaunchConfiguration("imu_record_enabled"), value_type=bool
+                        ),
                     },
                 ],
             ),

@@ -87,6 +87,42 @@ ros2 launch bxi_imu imu.launch.py driver:=hipnuc port:=/dev/ttyIMU baudrate:=921
 ros2 launch bxi_imu imu.launch.py driver:=yesense port:=/dev/ttyIMU_YESENSE_1 baudrate:=921600
 ```
 
+### Controlling IMU CSV recording
+
+The default recording setting is stored in the module configuration:
+
+```text
+src/bxi_imu/modules/hipnuc/config.yaml
+src/bxi_imu/modules/yesense/config.yaml
+```
+
+```yaml
+imu_record_enabled: true
+imu_record_dir: /var/log/bxi_log/imu/data
+imu_record_max_files: 10
+```
+
+For a standalone launch, override recording without editing YAML:
+
+```bash
+# Disable CSV recording
+ros2 launch bxi_imu imu.launch.py imu_record_enabled:=false
+
+# Enable CSV recording
+ros2 launch bxi_imu imu.launch.py imu_record_enabled:=true
+```
+
+When the controller starts `bxi_imu` automatically, edit
+`imu_record_enabled` in the active module's `config.yaml`, rebuild, and restart
+the controller:
+
+```yaml
+imu_record_enabled: false
+```
+
+CSV files are written to `imu_record_dir`; startup logs remain under
+`/var/log/bxi_log/imu/`.
+
 Inspect the active publisher:
 
 ```bash
