@@ -680,7 +680,10 @@ def main(args=None):
         finally:
             executor.shutdown()
 
-    rclpy.shutdown()
+    # rclpy's signal handler may already have shut down the context before
+    # executor.spin() returns. A second shutdown raises RuntimeError.
+    if rclpy.ok():
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":
