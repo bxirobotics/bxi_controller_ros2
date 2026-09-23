@@ -59,6 +59,12 @@ Current module settings:
 ```text
 hipnuc  -> /dev/ttyIMU             -> 921600 baud
 yesense -> /dev/ttyIMU_YESENSE_1   -> 921600 baud
+
+The `axis_mapping` parameter is configurable in each module's `config.yaml`.
+It lists the source axis for target `x,y,z`, with an optional `-` sign. For
+example, `"-y,x,z"` means `robot_x=-imu_y`, `robot_y=imu_x`, and
+`robot_z=imu_z`. Each source axis must be used once and the mapping must be a
+right-handed rotation.
 ```
 
 The udev rules must create the same aliases:

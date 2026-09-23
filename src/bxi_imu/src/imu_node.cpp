@@ -62,7 +62,7 @@ public:
     magnetic_enabled_ = declare_parameter<bool>("magnetic_enabled", false);
     temperature_enabled_ = declare_parameter<bool>("temperature_enabled", false);
     pressure_enabled_ = declare_parameter<bool>("pressure_enabled", false);
-    axis_mapping_ = declare_parameter<std::string>("axis_mapping", "y,-x,z");
+    axis_mapping_ = declare_parameter<std::string>("axis_mapping", "identity");
     imu_frequency_hz_ = declare_parameter<double>("imu_frequency_hz", 200.0);
     imu_timeout_multiplier_ = declare_parameter<double>("imu_timeout_multiplier", 1.5);
     imu_record_enabled_ = declare_parameter<bool>("imu_record_enabled", false);
@@ -73,7 +73,7 @@ public:
       "imu_candidates",
       std::vector<std::string>{
         "hipnuc|/dev/ttyIMU|921600|identity|500.0|2.5",
-        "yesense|/dev/ttyIMU_YESENSE_1|921600|y,-x,z|200.0|2.5"});
+        "yesense|/dev/ttyIMU_YESENSE_1|921600|-y,x,z|200.0|2.5"});
 
     imu_pub_ = create_publisher<sensor_msgs::msg::Imu>(imu_topic_, rclcpp::SensorDataQoS());
     euler_pub_ = create_publisher<geometry_msgs::msg::Vector3Stamped>(
@@ -574,42 +574,58 @@ private:
 
   void transform_sample_to_robot_frame(ImuSample & sample) const
   {
-    if (axis_mapping_ == "y,-x,z") {
-      const auto rotate = [](double x, double y, double z) {
-        return std::array<double, 3>{y, -x, z};
-      };
+    const auto mapping = parse_axis_mapping(axis_mapping_);
+    if (!mapping.has_value()) {
+      if (axis_mapping_ != "identity") {
+        RCLCPP_WARN_ONCE(
+          get_logger(),
+          "unsupported axis_mapping='%s'; using identity mapping",
+          axis_mapping_.c_str());
+      }
+      return;
+    }
 
-      const auto acceleration = rotate(
-        sample.imu.linear_acceleration.x,
-        sample.imu.linear_acceleration.y,
-        sample.imu.linear_acceleration.z);
-      sample.imu.linear_acceleration.x = acceleration[0];
-      sample.imu.linear_acceleration.y = acceleration[1];
-      sample.imu.linear_acceleration.z = acceleration[2];
+    const auto rotate = [&mapping](double x, double y, double z) {
+      const std::array<double, 3> input{x, y, z};
+      return std::array<double, 3>{
+        mapping->signs[0] * input[mapping->indices[0]],
+        mapping->signs[1] * input[mapping->indices[1]],
+        mapping->signs[2] * input[mapping->indices[2]]};
+    };
 
-      const auto angular_velocity = rotate(
-        sample.imu.angular_velocity.x,
-        sample.imu.angular_velocity.y,
-        sample.imu.angular_velocity.z);
-      sample.imu.angular_velocity.x = angular_velocity[0];
-      sample.imu.angular_velocity.y = angular_velocity[1];
-      sample.imu.angular_velocity.z = angular_velocity[2];
+    const auto acceleration = rotate(
+      sample.imu.linear_acceleration.x,
+      sample.imu.linear_acceleration.y,
+      sample.imu.linear_acceleration.z);
+    sample.imu.linear_acceleration.x = acceleration[0];
+    sample.imu.linear_acceleration.y = acceleration[1];
+    sample.imu.linear_acceleration.z = acceleration[2];
 
-      const auto magnetic = rotate(
-        sample.magnetic.magnetic_field.x,
-        sample.magnetic.magnetic_field.y,
-        sample.magnetic.magnetic_field.z);
-      sample.magnetic.magnetic_field.x = magnetic[0];
-      sample.magnetic.magnetic_field.y = magnetic[1];
-      sample.magnetic.magnetic_field.z = magnetic[2];
+    const auto angular_velocity = rotate(
+      sample.imu.angular_velocity.x,
+      sample.imu.angular_velocity.y,
+      sample.imu.angular_velocity.z);
+    sample.imu.angular_velocity.x = angular_velocity[0];
+    sample.imu.angular_velocity.y = angular_velocity[1];
+    sample.imu.angular_velocity.z = angular_velocity[2];
 
-      // q_robot = q_imu * q_(imu->robot), a +90 degree Z rotation here.
-      constexpr double kHalfSqrtTwo = 0.70710678118654752440;
-      const auto input = sample.imu.orientation;
-      sample.imu.orientation.w = (input.w - input.z) * kHalfSqrtTwo;
-      sample.imu.orientation.x = (input.x + input.y) * kHalfSqrtTwo;
-      sample.imu.orientation.y = (-input.x + input.y) * kHalfSqrtTwo;
-      sample.imu.orientation.z = (input.w + input.z) * kHalfSqrtTwo;
+    const auto magnetic = rotate(
+      sample.magnetic.magnetic_field.x,
+      sample.magnetic.magnetic_field.y,
+      sample.magnetic.magnetic_field.z);
+    sample.magnetic.magnetic_field.x = magnetic[0];
+    sample.magnetic.magnetic_field.y = magnetic[1];
+    sample.magnetic.magnetic_field.z = magnetic[2];
+
+    // The orientation uses the inverse coordinate transform on the right,
+    // matching the convention used by the existing fixed-axis mapping.
+    std::array<std::array<double, 3>, 3> inverse_matrix{};
+    for (std::size_t row = 0; row < 3; ++row) {
+      inverse_matrix[mapping->indices[row]][row] = mapping->signs[row];
+    }
+    const auto mapping_quaternion = quaternion_from_matrix(inverse_matrix);
+    sample.imu.orientation = multiply_quaternions(
+      sample.imu.orientation, mapping_quaternion);
 
       // Recompute Euler angles from the transformed quaternion. Roll, pitch,
       // and yaw cannot be remapped by simply swapping their three components.
@@ -628,15 +644,117 @@ private:
       sample.euler.vector.x = std::atan2(sin_roll, cos_roll);
       sample.euler.vector.y = std::asin(clamped_sin_pitch);
       sample.euler.vector.z = std::atan2(sin_yaw, cos_yaw);
-      return;
+  }
+
+  struct AxisMapping
+  {
+    std::array<int, 3> indices{};
+    std::array<double, 3> signs{};
+  };
+
+  static std::optional<AxisMapping> parse_axis_mapping(const std::string & value)
+  {
+    if (value == "identity") {
+      return std::nullopt;
     }
 
-    if (axis_mapping_ != "identity") {
-      RCLCPP_WARN_ONCE(
-        get_logger(),
-        "unsupported axis_mapping='%s'; using identity mapping",
-        axis_mapping_.c_str());
+    std::stringstream fields(value);
+    std::string token;
+    AxisMapping mapping;
+    std::array<bool, 3> used{};
+    int determinant = 1;
+    for (std::size_t row = 0; row < 3; ++row) {
+      if (!std::getline(fields, token, ',')) {
+        return std::nullopt;
+      }
+      if (token.empty()) {
+        return std::nullopt;
+      }
+      double sign = 1.0;
+      std::size_t axis_position = 0;
+      if (token.front() == '-') {
+        sign = -1.0;
+        axis_position = 1;
+      } else if (token.front() == '+') {
+        axis_position = 1;
+      }
+      if (token.size() != axis_position + 1) {
+        return std::nullopt;
+      }
+      const char axis = token[axis_position];
+      const int index = axis == 'x' ? 0 : axis == 'y' ? 1 : axis == 'z' ? 2 : -1;
+      if (index < 0 || used[index]) {
+        return std::nullopt;
+      }
+      mapping.indices[row] = index;
+      mapping.signs[row] = sign;
+      used[index] = true;
     }
+    if (std::getline(fields, token, ',')) {
+      return std::nullopt;
+    }
+
+    // A quaternion can represent rotations only, not reflections.
+    if (mapping.indices == std::array<int, 3>{0, 1, 2}) {
+      determinant *= 1;
+    } else if (mapping.indices == std::array<int, 3>{1, 2, 0} ||
+      mapping.indices == std::array<int, 3>{2, 0, 1}) {
+      determinant *= 1;
+    } else {
+      determinant *= -1;
+    }
+    for (const double sign : mapping.signs) {
+      determinant = static_cast<int>(determinant * sign);
+    }
+    if (determinant < 0) {
+      return std::nullopt;
+    }
+    return mapping;
+  }
+
+  static geometry_msgs::msg::Quaternion quaternion_from_matrix(
+    const std::array<std::array<double, 3>, 3> & matrix)
+  {
+    geometry_msgs::msg::Quaternion quaternion;
+    const double trace = matrix[0][0] + matrix[1][1] + matrix[2][2];
+    if (trace > 0.0) {
+      const double scale = 0.5 / std::sqrt(trace + 1.0);
+      quaternion.w = 0.25 / scale;
+      quaternion.x = (matrix[2][1] - matrix[1][2]) * scale;
+      quaternion.y = (matrix[0][2] - matrix[2][0]) * scale;
+      quaternion.z = (matrix[1][0] - matrix[0][1]) * scale;
+    } else if (matrix[0][0] > matrix[1][1] && matrix[0][0] > matrix[2][2]) {
+      const double scale = 2.0 * std::sqrt(1.0 + matrix[0][0] - matrix[1][1] - matrix[2][2]);
+      quaternion.w = (matrix[2][1] - matrix[1][2]) / scale;
+      quaternion.x = 0.25 * scale;
+      quaternion.y = (matrix[0][1] + matrix[1][0]) / scale;
+      quaternion.z = (matrix[0][2] + matrix[2][0]) / scale;
+    } else if (matrix[1][1] > matrix[2][2]) {
+      const double scale = 2.0 * std::sqrt(1.0 + matrix[1][1] - matrix[0][0] - matrix[2][2]);
+      quaternion.w = (matrix[0][2] - matrix[2][0]) / scale;
+      quaternion.x = (matrix[0][1] + matrix[1][0]) / scale;
+      quaternion.y = 0.25 * scale;
+      quaternion.z = (matrix[1][2] + matrix[2][1]) / scale;
+    } else {
+      const double scale = 2.0 * std::sqrt(1.0 + matrix[2][2] - matrix[0][0] - matrix[1][1]);
+      quaternion.w = (matrix[1][0] - matrix[0][1]) / scale;
+      quaternion.x = (matrix[0][2] + matrix[2][0]) / scale;
+      quaternion.y = (matrix[1][2] + matrix[2][1]) / scale;
+      quaternion.z = 0.25 * scale;
+    }
+    return quaternion;
+  }
+
+  static geometry_msgs::msg::Quaternion multiply_quaternions(
+    const geometry_msgs::msg::Quaternion & left,
+    const geometry_msgs::msg::Quaternion & right)
+  {
+    geometry_msgs::msg::Quaternion result;
+    result.w = left.w * right.w - left.x * right.x - left.y * right.y - left.z * right.z;
+    result.x = left.w * right.x + left.x * right.w + left.y * right.z - left.z * right.y;
+    result.y = left.w * right.y - left.x * right.z + left.y * right.w + left.z * right.x;
+    result.z = left.w * right.z + left.x * right.y - left.y * right.x + left.z * right.w;
+    return result;
   }
 
   double expected_period_ms() const

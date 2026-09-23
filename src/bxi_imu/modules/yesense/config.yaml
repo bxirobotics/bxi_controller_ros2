@@ -11,8 +11,8 @@ imu_module:
     magnetic_topic: /magnetic_data
     temperature_topic: /temp_data
     pressure_topic: /pressure_data
-    # robot_x=imu_y, robot_y=-imu_x, robot_z=imu_z
-    axis_mapping: "y,-x,z"
+    # robot_x=-imu_y, robot_y=imu_x, robot_z=imu_z
+    axis_mapping: "-y,x,z"
     imu_frequency_hz: 200.0
     # 200 Hz => 5 ms period; timeout threshold is 12.5 ms (2.5 periods).
     imu_timeout_multiplier: 2.5
