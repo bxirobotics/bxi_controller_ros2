@@ -216,7 +216,7 @@ static double D8(uint8_t *p)
  int hipnuc_dump_packet(hipnuc_raw_t *raw, char *buf, size_t buf_size)
  {
      int written = 0;
-     int ret;
+     int ret = 0;
  
      /* dump 0x91 packet */
      if(raw->hi91.tag == HIPNUC_ID_HI91)
