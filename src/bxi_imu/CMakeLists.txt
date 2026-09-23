@@ -25,35 +25,42 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 
-add_library(hipnuc_decoder STATIC
-  modules/hipnuc/lib/hipnuc_vendor/src/canopen_parser.c
-  modules/hipnuc/lib/hipnuc_vendor/src/hipnuc_can_common.c
-  modules/hipnuc/lib/hipnuc_vendor/src/hipnuc_dec.c
-  modules/hipnuc/lib/hipnuc_vendor/src/hipnuc_j1939_parser.c
-  modules/hipnuc/lib/hipnuc_vendor/src/nmea_dec.c
-)
-target_include_directories(hipnuc_decoder PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/modules/hipnuc/lib/hipnuc_vendor/include>
-  $<INSTALL_INTERFACE:include>
-)
-
 add_executable(imu_node
   src/imu_node.cpp
   src/backend_factory.cpp
-  modules/hipnuc/hipnuc_backend.cpp
-  modules/yesense/yesense_backend.cpp
-  modules/yesense/lib/yesense_decoder.cpp
-  modules/yesense/lib/yesense_std_out_decoder.cpp
 )
 target_include_directories(imu_node PRIVATE
   include
-  modules/hipnuc
-  modules/yesense
-  modules/hipnuc/lib/hipnuc_vendor/include
-  modules/yesense/lib
 )
 ament_target_dependencies(imu_node rclcpp sensor_msgs geometry_msgs)
-target_link_libraries(imu_node hipnuc_decoder)
+target_link_libraries(imu_node ${CMAKE_DL_LIBS})
+
+# Every module is a self-contained shared-library plugin. Adding a new module
+# directory with backend source files automatically adds it to the build.
+file(GLOB MODULE_DIRECTORIES CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" "modules/*")
+foreach(MODULE_DIRECTORY IN LISTS MODULE_DIRECTORIES)
+  get_filename_component(MODULE_NAME "${MODULE_DIRECTORY}" NAME)
+    if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/${MODULE_DIRECTORY}" AND
+    (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${MODULE_DIRECTORY}/backend.cpp" OR
+      EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${MODULE_DIRECTORY}/${MODULE_NAME}_backend.cpp"))
+    string(REGEX REPLACE "[^A-Za-z0-9_]" "_" MODULE_TARGET_SUFFIX "${MODULE_NAME}")
+    file(GLOB_RECURSE MODULE_SOURCES CONFIGURE_DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/${MODULE_DIRECTORY}/*.cpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/${MODULE_DIRECTORY}/*.c")
+    add_library("bxi_imu_module_${MODULE_TARGET_SUFFIX}" SHARED ${MODULE_SOURCES})
+    target_include_directories("bxi_imu_module_${MODULE_TARGET_SUFFIX}" PRIVATE
+      include
+      "${CMAKE_CURRENT_SOURCE_DIR}/${MODULE_DIRECTORY}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/${MODULE_DIRECTORY}/lib"
+      "${CMAKE_CURRENT_SOURCE_DIR}/${MODULE_DIRECTORY}/lib/hipnuc_vendor/include")
+    ament_target_dependencies("bxi_imu_module_${MODULE_TARGET_SUFFIX}" rclcpp sensor_msgs geometry_msgs)
+    set_target_properties("bxi_imu_module_${MODULE_TARGET_SUFFIX}" PROPERTIES
+      OUTPUT_NAME "bxi_imu_${MODULE_NAME}"
+      LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/modules")
+    install(TARGETS "bxi_imu_module_${MODULE_TARGET_SUFFIX}"
+      LIBRARY DESTINATION lib/${PROJECT_NAME}/modules)
+  endif()
+endforeach()
 
 install(TARGETS imu_node DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})

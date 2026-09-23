@@ -184,3 +184,14 @@ int YesenseBackend::open_serial_port()
 }
 
 }  // namespace bxi_imu
+
+extern "C" const char * bxi_imu_driver_name()
+{
+  return "yesense";
+}
+
+extern "C" bxi_imu::ImuBackend * bxi_imu_create_backend(
+  const std::string & port, int baudrate, const rclcpp::Logger & logger)
+{
+  return new bxi_imu::YesenseBackend(port, baudrate, logger);
+}
