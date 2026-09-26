@@ -18,6 +18,7 @@ endif()
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(communication REQUIRED)
 find_package(yaml-cpp REQUIRED)
@@ -87,7 +88,12 @@ target_include_directories(${PROJECT_NAME} PRIVATE include)
 ament_target_dependencies(${PROJECT_NAME} rclcpp std_msgs communication)
 target_link_libraries(${PROJECT_NAME} ${PROJECT_NAME}_core)
 
-install(TARGETS ${PROJECT_NAME}_core ${PROJECT_NAME}
+add_executable(imu_publisher_guard
+  src/imu_publisher_guard.cpp
+)
+ament_target_dependencies(imu_publisher_guard rclcpp sensor_msgs)
+
+install(TARGETS ${PROJECT_NAME}_core ${PROJECT_NAME} imu_publisher_guard
         EXPORT ${PROJECT_NAME}_targets
         ARCHIVE DESTINATION lib
         LIBRARY DESTINATION lib
@@ -101,6 +107,9 @@ install(DIRECTORY launch
 
 install(DIRECTORY config
          DESTINATION share/${PROJECT_NAME})
+
+install(PROGRAMS scripts/start_imu_if_owned.sh
+        DESTINATION share/${PROJECT_NAME}/scripts)
 
 ament_export_include_directories(include)
 ament_export_libraries(${PROJECT_NAME}_core)

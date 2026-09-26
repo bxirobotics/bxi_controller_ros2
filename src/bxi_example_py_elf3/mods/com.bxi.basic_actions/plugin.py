@@ -17,6 +17,7 @@ from .applause_state import ApplauseState, PlaybackClip, load_clip
 from .dance_state import DanceState
 from .hello_state import HelloState
 from .initial_pos_state import InitialPosState
+from .imu_protection_state import ImuProtectionState
 from .lie_down_state import LieDownState
 from .normal_run_state import NormalRunState
 from .normal_state import NormalState
@@ -167,6 +168,12 @@ def create_mod(context: ModLoadContext) -> ModDefinition:
             ),
             "zero_torque": lambda state: ZeroTorqueState(
                 state.name, state.state_id
+            ),
+            "imu_protection": lambda state: ImuProtectionState(
+                state.name,
+                state.state_id,
+                kp=state.float_param("kp", 20.0),
+                kd=state.float_param("kd", 1.0),
             ),
             "pd_brake": lambda state: PdBrakeState(
                 state.name, state.state_id, normal_policy
