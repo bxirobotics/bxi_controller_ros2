@@ -138,6 +138,9 @@ ros2 launch bxi_imu imu.launch.py imu_record_enabled:=false
 ros2 launch bxi_imu imu.launch.py imu_record_enabled:=true
 ```
 
+默认值 `imu_record_enabled:=auto`，表示采用最终选中 IMU 模块自身
+`config.yaml` 中的设置；因此 Hipnuc 和 Yesense 可以独立设置记录策略。
+
 如果由控制程序自动拉起 `bxi_imu`，启动脚本使用模块 YAML 中的配置。
 此时需要修改当前模块的 `config.yaml`：
 

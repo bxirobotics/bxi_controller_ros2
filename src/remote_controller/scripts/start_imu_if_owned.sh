@@ -9,6 +9,8 @@ baudrate="${IMU_BAUDRATE:-921600}"
 imu_topic="${IMU_TOPIC:-/hardware/imu_data}"
 hardware_node="${HARDWARE_NODE:-/hardware_elf3}"
 imu_data_wait_seconds="${IMU_DATA_WAIT_SECONDS:-5}"
+bxi_imu_pid=""
+imu_guard_pid=""
 
 log() {
   # Bash formats this with its built-in printf: startup decisions stay easy to
@@ -22,6 +24,16 @@ mkdir -p "$(dirname "$log_file")"
 # dedicated imu_*.log file. The outer launcher retains a separate guard log
 # only for shell startup errors.
 exec > >(tee -a "$log_file" >/dev/null) 2>&1
+
+stop_children() {
+  log "received shutdown signal; stopping IMU child processes"
+  [ -z "$imu_guard_pid" ] || kill -SIGINT "$imu_guard_pid" 2>/dev/null || true
+  [ -z "$bxi_imu_pid" ] || kill -SIGINT "$bxi_imu_pid" 2>/dev/null || true
+  [ -z "$imu_guard_pid" ] || wait "$imu_guard_pid" 2>/dev/null || true
+  [ -z "$bxi_imu_pid" ] || wait "$bxi_imu_pid" 2>/dev/null || true
+  exit 0
+}
+trap stop_children INT TERM
 
 log "===== IMU startup ====="
 log "started_at=$(date --iso-8601=seconds)"
@@ -80,32 +92,26 @@ fi
 imu_parameter="$(ros2 param get "$hardware_node" hardware_config/imu 2>&1 || true)"
 log "hardware IMU parameter: $imu_parameter"
 
-# A publisher can exist even when hardware IMU reading is disabled. Decide
-# whether the hardware path is usable only after receiving an actual sample.
-log "checking for a real message on $imu_topic"
-
-sample_file="$(mktemp /tmp/bxi_imu_sample.XXXXXX)"
-sample_received=0
-sample_deadline=$((SECONDS + imu_data_wait_seconds))
-log "waiting up to ${imu_data_wait_seconds}s for an actual message on $imu_topic"
-while [ "$SECONDS" -lt "$sample_deadline" ]; do
-  if timeout 1s ros2 topic echo --once \
-    --qos-reliability best_effort \
-    --qos-durability volatile \
-    "$imu_topic" sensor_msgs/msg/Imu >"$sample_file" 2>&1; then
-    sample_received=1
-    break
-  fi
-  sleep 0.1
-done
-
-if [ "$sample_received" -eq 1 ]; then
-  log "hardware IMU data received; keeping the existing publisher and not starting bxi_imu"
-  rm -f "$sample_file"
+# A publisher can exist while hardware IMU reading is disabled, and another
+# process can publish the same topic. Only hardware_elf3 GID-tagged valid
+# frames may claim ownership of the shared IMU topic.
+log "checking $hardware_node for valid IMU frames on $imu_topic"
+"$imu_publisher_guard" --ros-args \
+  -p "imu_topic:=$imu_topic" \
+  -p "hardware_node:=$hardware_node" \
+  -p min_hardware_frames:=3 \
+  -p hardware_frame_window_ms:=500 \
+  -p max_wait_ms:=$((imu_data_wait_seconds * 1000))
+startup_guard_status=$?
+if [ "$startup_guard_status" -eq 10 ]; then
+  log "hardware IMU is actively publishing valid frames; not starting bxi_imu"
   exit 0
 fi
-rm -f "$sample_file"
-log "no IMU message received within ${imu_data_wait_seconds}s; evaluating bxi_imu fallback"
+if [ "$startup_guard_status" -ne 11 ]; then
+  log "hardware IMU ownership check failed with status=$startup_guard_status; refusing bxi_imu fallback"
+  exit 1
+fi
+log "hardware IMU did not publish valid frames within ${imu_data_wait_seconds}s; evaluating bxi_imu fallback"
 
 if [ "$device_link" = "auto" ]; then
   available_candidate=0

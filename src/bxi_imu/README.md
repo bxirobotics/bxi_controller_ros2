@@ -118,6 +118,9 @@ ros2 launch bxi_imu imu.launch.py imu_record_enabled:=false
 ros2 launch bxi_imu imu.launch.py imu_record_enabled:=true
 ```
 
+The default `imu_record_enabled:=auto` uses the selected module's own
+`config.yaml`, so Hipnuc and Yesense can keep independent recording policies.
+
 When the controller starts `bxi_imu` automatically, edit
 `imu_record_enabled` in the active module's `config.yaml`, rebuild, and restart
 the controller:

@@ -66,6 +66,8 @@ public:
     imu_frequency_hz_ = declare_parameter<double>("imu_frequency_hz", 200.0);
     imu_timeout_multiplier_ = declare_parameter<double>("imu_timeout_multiplier", 1.5);
     imu_record_enabled_ = declare_parameter<bool>("imu_record_enabled", false);
+    imu_record_enabled_override_ = declare_parameter<std::string>(
+      "imu_record_enabled_override", "auto");
     imu_record_dir_ = declare_parameter<std::string>(
       "imu_record_dir", "/var/log/bxi_log/imu/data");
     imu_record_max_files_ = declare_parameter<int>("imu_record_max_files", 10);
@@ -74,20 +76,6 @@ public:
       std::vector<std::string>{
         "hipnuc|/dev/ttyIMU|921600|identity|500.0|2.5",
         "yesense|/dev/ttyIMU_YESENSE_1|921600|-y,x,z|200.0|2.5"});
-
-    imu_pub_ = create_publisher<sensor_msgs::msg::Imu>(imu_topic_, rclcpp::SensorDataQoS());
-    euler_pub_ = create_publisher<geometry_msgs::msg::Vector3Stamped>(
-      euler_topic_,
-      rclcpp::SensorDataQoS());
-    magnetic_pub_ = create_publisher<sensor_msgs::msg::MagneticField>(
-      magnetic_topic_,
-      rclcpp::SensorDataQoS());
-    temperature_pub_ = create_publisher<sensor_msgs::msg::Temperature>(
-      temperature_topic_,
-      rclcpp::SensorDataQoS());
-    pressure_pub_ = create_publisher<sensor_msgs::msg::FluidPressure>(
-      pressure_topic_,
-      rclcpp::SensorDataQoS());
 
     if (!std::isfinite(quaternion_norm_tolerance_) ||
       quaternion_norm_tolerance_ < 0.0 || quaternion_norm_tolerance_ >= 1.0)
@@ -130,7 +118,30 @@ public:
         driver_.c_str(), port_.c_str());
       return;
     }
+    apply_record_enabled_override();
+    if (!std::isfinite(quaternion_norm_tolerance_) ||
+      quaternion_norm_tolerance_ < 0.0 || quaternion_norm_tolerance_ >= 1.0)
+    {
+      RCLCPP_WARN(
+        get_logger(),
+        "invalid quaternion_norm_tolerance=%.6f; using 0.1",
+        quaternion_norm_tolerance_);
+      quaternion_norm_tolerance_ = 0.1;
+    }
     sanitize_timing_parameters();
+    imu_pub_ = create_publisher<sensor_msgs::msg::Imu>(imu_topic_, rclcpp::SensorDataQoS());
+    euler_pub_ = create_publisher<geometry_msgs::msg::Vector3Stamped>(
+      euler_topic_,
+      rclcpp::SensorDataQoS());
+    magnetic_pub_ = create_publisher<sensor_msgs::msg::MagneticField>(
+      magnetic_topic_,
+      rclcpp::SensorDataQoS());
+    temperature_pub_ = create_publisher<sensor_msgs::msg::Temperature>(
+      temperature_topic_,
+      rclcpp::SensorDataQoS());
+    pressure_pub_ = create_publisher<sensor_msgs::msg::FluidPressure>(
+      pressure_topic_,
+      rclcpp::SensorDataQoS());
 
     RCLCPP_INFO(
       get_logger(),
@@ -178,6 +189,22 @@ private:
     std::string axis_mapping{"identity"};
     double frequency_hz{200.0};
     double timeout_multiplier{1.5};
+    bool has_module_parameters{false};
+    std::string frame_id;
+    std::string imu_topic;
+    std::string euler_topic;
+    std::string magnetic_topic;
+    std::string temperature_topic;
+    std::string pressure_topic;
+    bool imu_enabled{true};
+    double quaternion_norm_tolerance{0.1};
+    bool euler_enabled{false};
+    bool magnetic_enabled{false};
+    bool temperature_enabled{false};
+    bool pressure_enabled{false};
+    bool record_enabled{false};
+    std::string record_dir;
+    int record_max_files{10};
   };
 
   static bool parse_candidate(const std::string & entry, CandidateConfig & candidate)
@@ -202,7 +229,56 @@ private:
     } catch (const std::exception &) {
       return false;
     }
-    return !candidate.driver.empty() && !candidate.port.empty();
+    if (candidate.driver.empty() || candidate.port.empty()) {
+      return false;
+    }
+
+    std::vector<std::string> module_fields;
+    std::string field;
+    while (std::getline(fields, field, '|')) {
+      module_fields.push_back(field);
+    }
+    if (module_fields.empty()) {
+      return true;
+    }
+    if (module_fields.size() != 15) {
+      return false;
+    }
+    try {
+      candidate.frame_id = module_fields[0];
+      candidate.imu_topic = module_fields[1];
+      candidate.euler_topic = module_fields[2];
+      candidate.magnetic_topic = module_fields[3];
+      candidate.temperature_topic = module_fields[4];
+      candidate.pressure_topic = module_fields[5];
+      const auto parse_bool = [](const std::string & value, bool & output) {
+          if (value == "true" || value == "1") {
+            output = true;
+            return true;
+          }
+          if (value == "false" || value == "0") {
+            output = false;
+            return true;
+          }
+          return false;
+        };
+      if (!parse_bool(module_fields[6], candidate.imu_enabled) ||
+        !parse_bool(module_fields[8], candidate.euler_enabled) ||
+        !parse_bool(module_fields[9], candidate.magnetic_enabled) ||
+        !parse_bool(module_fields[10], candidate.temperature_enabled) ||
+        !parse_bool(module_fields[11], candidate.pressure_enabled) ||
+        !parse_bool(module_fields[12], candidate.record_enabled))
+      {
+        return false;
+      }
+      candidate.quaternion_norm_tolerance = std::stod(module_fields[7]);
+      candidate.record_dir = module_fields[13];
+      candidate.record_max_files = std::stoi(module_fields[14]);
+      candidate.has_module_parameters = true;
+    } catch (const std::exception &) {
+      return false;
+    }
+    return true;
   }
 
   void apply_candidate_config(const CandidateConfig & candidate)
@@ -210,6 +286,42 @@ private:
     axis_mapping_ = candidate.axis_mapping;
     imu_frequency_hz_ = candidate.frequency_hz;
     imu_timeout_multiplier_ = candidate.timeout_multiplier;
+    if (!candidate.has_module_parameters) {
+      return;
+    }
+    frame_id_ = candidate.frame_id;
+    imu_topic_ = candidate.imu_topic;
+    euler_topic_ = candidate.euler_topic;
+    magnetic_topic_ = candidate.magnetic_topic;
+    temperature_topic_ = candidate.temperature_topic;
+    pressure_topic_ = candidate.pressure_topic;
+    imu_enabled_ = candidate.imu_enabled;
+    quaternion_norm_tolerance_ = candidate.quaternion_norm_tolerance;
+    euler_enabled_ = candidate.euler_enabled;
+    magnetic_enabled_ = candidate.magnetic_enabled;
+    temperature_enabled_ = candidate.temperature_enabled;
+    pressure_enabled_ = candidate.pressure_enabled;
+    imu_record_enabled_ = candidate.record_enabled;
+    imu_record_dir_ = candidate.record_dir;
+    imu_record_max_files_ = candidate.record_max_files;
+  }
+
+  void apply_record_enabled_override()
+  {
+    if (imu_record_enabled_override_ == "auto") {
+      return;
+    }
+    if (imu_record_enabled_override_ == "true" || imu_record_enabled_override_ == "1") {
+      imu_record_enabled_ = true;
+      return;
+    }
+    if (imu_record_enabled_override_ == "false" || imu_record_enabled_override_ == "0") {
+      imu_record_enabled_ = false;
+      return;
+    }
+    RCLCPP_WARN(
+      get_logger(), "invalid imu_record_enabled_override='%s'; using module setting",
+      imu_record_enabled_override_.c_str());
   }
 
   void sanitize_timing_parameters()
@@ -843,6 +955,7 @@ private:
   double imu_frequency_hz_{200.0};
   double imu_timeout_multiplier_{1.5};
   bool imu_record_enabled_{false};
+  std::string imu_record_enabled_override_{"auto"};
   std::string imu_record_dir_{"/var/log/bxi_log/imu/data"};
   int imu_record_max_files_{10};
   bool imu_enabled_{true};

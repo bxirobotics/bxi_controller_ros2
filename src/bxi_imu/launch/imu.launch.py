@@ -31,7 +31,6 @@ def generate_launch_description():
     module_configs = sorted(glob.glob(os.path.join(module_root, "*", "config.yaml")))
 
     candidates = []
-    common_parameters = {}
     for config_path in module_configs:
         with open(config_path, "r", encoding="utf-8") as config_file:
             document = yaml.safe_load(config_file) or {}
@@ -44,23 +43,35 @@ def generate_launch_description():
             frequency = float(parameters.get("imu_frequency_hz", 200.0))
             timeout_multiplier = float(parameters.get("imu_timeout_multiplier", 1.5))
             candidates.append(
-                f"{driver}|{port}|{baudrate}|{axis_mapping}|{frequency}|{timeout_multiplier}"
+                "|".join(
+                    [
+                        driver,
+                        port,
+                        str(baudrate),
+                        axis_mapping,
+                        str(frequency),
+                        str(timeout_multiplier),
+                        str(parameters.get("frame_id", "imu_link")),
+                        str(parameters.get("imu_topic", "/hardware/imu_data")),
+                        str(parameters.get("euler_topic", "/euler_data")),
+                        str(parameters.get("magnetic_topic", "/magnetic_data")),
+                        str(parameters.get("temperature_topic", "/temp_data")),
+                        str(parameters.get("pressure_topic", "/pressure_data")),
+                        str(parameters.get("imu_enabled", True)).lower(),
+                        str(parameters.get("quaternion_norm_tolerance", 0.1)),
+                        str(parameters.get("euler_enabled", False)).lower(),
+                        str(parameters.get("magnetic_enabled", False)).lower(),
+                        str(parameters.get("temperature_enabled", False)).lower(),
+                        str(parameters.get("pressure_enabled", False)).lower(),
+                        str(parameters.get("imu_record_enabled", False)).lower(),
+                        str(parameters.get("imu_record_dir", "/var/log/bxi_log/imu/data")),
+                        str(parameters.get("imu_record_max_files", 10)),
+                    ]
+                )
             )
-        if not common_parameters:
-            common_parameters = {
-                key: value for key, value in parameters.items()
-                if key not in {
-                    "driver", "port", "baudrate", "axis_mapping",
-                    "imu_frequency_hz", "imu_timeout_multiplier",
-                }
-            }
 
     if not candidates:
         raise RuntimeError(f"No IMU module config found under {module_root}")
-
-    record_enabled_default = str(
-        common_parameters.get("imu_record_enabled", False)
-    ).lower()
 
     return LaunchDescription(
         [
@@ -68,8 +79,8 @@ def generate_launch_description():
             DeclareLaunchArgument("port", default_value="auto"),
             DeclareLaunchArgument("baudrate", default_value="921600"),
             DeclareLaunchArgument(
-                "imu_record_enabled", default_value=record_enabled_default,
-                description="Enable CSV IMU recording (true/false)",
+                "imu_record_enabled", default_value="auto",
+                description="Override module CSV recording setting (auto/true/false)",
             ),
             Node(
                 package="bxi_imu",
@@ -84,9 +95,8 @@ def generate_launch_description():
                             LaunchConfiguration("baudrate"), value_type=int
                         ),
                         "imu_candidates": candidates,
-                        **common_parameters,
-                        "imu_record_enabled": ParameterValue(
-                            LaunchConfiguration("imu_record_enabled"), value_type=bool
+                        "imu_record_enabled_override": ParameterValue(
+                            LaunchConfiguration("imu_record_enabled"), value_type=str
                         ),
                     },
                 ],

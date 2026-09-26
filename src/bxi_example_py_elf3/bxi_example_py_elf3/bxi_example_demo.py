@@ -18,6 +18,7 @@ from threading import Event, Lock
 import numpy as np
 
 import time
+import math
 import os
 import json
 from collections import deque
@@ -125,6 +126,8 @@ class BxiExample(Node):
         self._imu_last_received_at = None
         self._imu_protection_latched = False
         self._imu_first_received_logged = False
+        self._imu_invalid_frame_count = 0
+        self._next_imu_invalid_warning = 0.0
         self._imu_startup_started_at = None
         self._imu_startup_timeout_logged = False
         self._next_imu_startup_warning = 0.0
@@ -641,6 +644,38 @@ class BxiExample(Node):
         quat = msg.orientation
         avel = msg.angular_velocity
         acceleration = msg.linear_acceleration
+        quaternion_norm = math.sqrt(
+            quat.w * quat.w + quat.x * quat.x + quat.y * quat.y + quat.z * quat.z
+        )
+        quaternion_valid = all(
+            math.isfinite(value) for value in (quat.w, quat.x, quat.y, quat.z)
+        ) and 0.9 <= quaternion_norm <= 1.1
+        vectors_valid = all(
+            math.isfinite(value)
+            for value in (
+                avel.x,
+                avel.y,
+                avel.z,
+                acceleration.x,
+                acceleration.y,
+                acceleration.z,
+            )
+        )
+        if not quaternion_valid or not vectors_valid:
+            now = time.monotonic()
+            with self.lock_in:
+                self._imu_invalid_frame_count += 1
+                invalid_count = self._imu_invalid_frame_count
+                should_log = now >= self._next_imu_invalid_warning
+                if should_log:
+                    self._next_imu_invalid_warning = now + 5.0
+            if should_log:
+                self.get_logger().warning(
+                    "dropping invalid IMU frame: "
+                    f"quaternion_norm={quaternion_norm:.6f}, "
+                    f"count={invalid_count}"
+                )
+            return
 
         with self.lock_in:
             self.quat_xyzw[:] = quat.x, quat.y, quat.z, quat.w
