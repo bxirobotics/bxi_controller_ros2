@@ -16,6 +16,7 @@ runtime_requirements:
 
 events:
   normal: {slot: btn_1, value: 1}
+  forward_back: {slot: btn_5, value: 1}
   zero_torque: {slot: btn_2, value: 1}
   pd_brake: {slot: btn_3, value: 1}
   initial_pos: {slot: btn_4, value: 1}
@@ -28,6 +29,9 @@ states:
   normal:
     manifest: {label: 走路, priority: 1000, group: Base}
     speed_profile: normal
+  forward_back:
+    manifest: {label: 自动前后行走, priority: 995, group: Base}
+    params: {speed: 0.2, segment_sec: 2.0}
   zero_torque:
     manifest:
       label: 零力矩
@@ -60,6 +64,11 @@ states:
       confirm_message: 请确保机器人周围1米范围内没有障碍物
 
 routes:
+  - {from: normal, event: forward_back, to: forward_back, transition: soft_switch}
+  - {from: forward_back, event: forward_back, to: normal, transition: soft_switch}
+  - {from: forward_back, event: zero_torque, to: zero_torque}
+  - {from: forward_back, event: pd_brake, to: pd_brake, transition: first_frame_switch}
+  - {from: forward_back, event: initial_pos, to: initial_pos, transition: first_frame_switch}
   - {from: pd_brake, event: normal, to: normal, transition: soft_switch}
   - {from: normal, event: zero_torque, to: zero_torque}
   - {from: pd_brake, event: zero_torque, to: zero_torque}

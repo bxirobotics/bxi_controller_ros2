@@ -108,6 +108,9 @@ outputs:
     # Both shoulders + Y switches between zero torque and suspended tests.
     - output: btn_8=1
       when: [shoulder.left_event, shoulder.right_event, button.y_event]
+    # Both shoulders + X toggles the forward/back mode from normal.
+    - output: btn_5=1
+      when: [shoulder.left_event, shoulder.right_event, button.x_event]
     - output: btn_1=1
       when: [shoulder.right_event, button.x_event, {released: shoulder.left_event}]
     - output: btn_2=1

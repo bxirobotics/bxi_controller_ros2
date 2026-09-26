@@ -94,6 +94,9 @@ class NormalState(RobotControlState, EntryFrameProvider, RunningFrameProvider):
         ctx: RobotControlContext,
         from_state: StateBehavior[RobotControlContext],
     ) -> None:
+        if isinstance(from_state, NormalState) and from_state._policy is self._policy:
+            self.get_cmd_vel(ctx)
+            return
         ctx.preheat_model(
             self._policy.get(), command=self.get_cmd_vel(ctx)
         )

@@ -299,6 +299,8 @@ void test_basic_and_test_mode_buttons_do_not_overlap()
     only(buttons_for({{"js.button.6", 1.0}, {"js.button.0", 1.0}}), 6);
     only(buttons_for({{"js.button.6", 1.0}, {"js.button.7", 1.0},
                       {"js.button.4", 1.0}}), 8);
+    only(buttons_for({{"js.button.6", 1.0}, {"js.button.7", 1.0},
+                      {"js.button.3", 1.0}}), 5);
     only(buttons_for({{"js.button.0", 1.0}}), 7);
     only(buttons_for({{"js.button.3", 1.0}}), 9);
     only(buttons_for({{"js.button.4", 1.0}}), 10);

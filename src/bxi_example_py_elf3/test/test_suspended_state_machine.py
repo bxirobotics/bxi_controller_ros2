@@ -286,6 +286,42 @@ def test_full_mod_routes_and_timer_handoff(monkeypatch):
         runtime = node.runtime
         runtime._platform = platform
 
+        runtime._run_control_cycle(test_owner=False)
+        platform.events = ["com.bxi.basic_actions/forward_back"]
+        runtime._run_control_cycle(test_owner=False)
+        assert runtime.current_state_name == _STATES.ZERO_TORQUE
+
+        assert runtime.request_state(
+            "com.bxi.basic_actions/normal", trigger="test_setup", force=True
+        )
+        runtime._run_control_cycle(test_owner=False)
+        assert runtime.current_state_name == "com.bxi.basic_actions/normal"
+        observation.raw_cmd_vel[:] = (0.8, 0.4, 0.5)
+        platform.events = ["com.bxi.basic_actions/forward_back"]
+        runtime._run_control_cycle(test_owner=False)
+        assert runtime.current_state_name == "com.bxi.basic_actions/forward_back"
+        runtime._run_control_cycle(test_owner=False)
+        np.testing.assert_allclose(runtime.framework.current_cmd_vel, [0.2, 0.0, 0.0])
+
+        platform.events = ["com.bxi.basic_actions/zero_torque"]
+        runtime._run_control_cycle(test_owner=False)
+        assert runtime.current_state_name == _STATES.ZERO_TORQUE
+        assert runtime.request_state(
+            "com.bxi.basic_actions/normal", trigger="test_setup", force=True
+        )
+        runtime._run_control_cycle(test_owner=False)
+        platform.events = ["com.bxi.basic_actions/forward_back"]
+        runtime._run_control_cycle(test_owner=False)
+        assert runtime.current_state_name == "com.bxi.basic_actions/forward_back"
+        platform.events = ["com.bxi.basic_actions/forward_back"]
+        runtime._run_control_cycle(test_owner=False)
+        assert runtime.current_state_name == "com.bxi.basic_actions/normal"
+        platform.events = ["com.bxi.basic_actions/zero_torque"]
+        runtime._run_control_cycle(test_owner=False)
+        assert runtime.current_state_name == _STATES.ZERO_TORQUE
+        observation.raw_cmd_vel.fill(0.0)
+        platform.published.clear()
+
         platform.events = ["com.bxi.suspended_tests/test_mode"]
         runtime._run_control_cycle(test_owner=False)
         assert runtime.current_state_name == _STATES.TEST_IDLE

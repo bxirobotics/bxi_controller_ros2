@@ -10,6 +10,7 @@ from bxi_example_py_elf3.framework.mod_api import (
 )
 
 from .imu_protection_state import ImuProtectionState
+from .forward_back_state import ForwardBackState
 from .initial_pos_state import InitialPosState
 from .normal_state import NormalState
 from .pd_brake_state import PdBrakeState
@@ -51,6 +52,11 @@ def create_mod(context: ModLoadContext) -> ModDefinition:
     return ModDefinition(
         state_factories={
             "normal": lambda state: NormalState(state.name, state.state_id, normal_policy),
+            "forward_back": lambda state: ForwardBackState(
+                state.name, state.state_id, normal_policy,
+                speed=state.float_param("speed", 0.2),
+                segment_sec=state.float_param("segment_sec", 2.0),
+            ),
             "zero_torque": lambda state: ZeroTorqueState(state.name, state.state_id),
             "imu_protection": lambda state: ImuProtectionState(
                 state.name, state.state_id,
