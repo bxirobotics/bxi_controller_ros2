@@ -68,6 +68,7 @@ def generate_launch_description(
     controller_executable = LaunchConfiguration("controller_executable")
     controller_name = LaunchConfiguration("controller_name")
     controller_config_file = LaunchConfiguration("controller_config_file")
+    enable_imu = LaunchConfiguration("enable_imu")
 
     hardware_node = Node(
         package="hardware_elf3",
@@ -76,7 +77,7 @@ def generate_launch_description(
         output="screen",
         parameters=[
             {
-                "hardware_config/imu": True,
+                "hardware_config/imu": ParameterValue(enable_imu, value_type=bool),
                 "hardware_config/motor_pwr": True,
                 "hardware_config/motor_disable": 0x60000000,
             }
@@ -168,6 +169,11 @@ def generate_launch_description(
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument(
+                "enable_imu",
+                default_value="true",
+                description="Enable hardware_elf3 IMU reader",
+            ),
             DeclareLaunchArgument(
                 "controller_config_file",
                 default_value=default_config_file,

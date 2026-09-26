@@ -112,12 +112,15 @@ outputs:
 
 system:
   start:
-    - "mkdir -p /var/log/bxi_log"
-    - "ros2 launch bxi_example_py_elf3 example_launch_suspended_tests_hw.launch.py start_remote_controller:=false > /var/log/bxi_log/$(date +%Y-%m-%d_%H-%M-%S)_elf.log 2>&1 &"
+    - "mkdir -p /var/log/bxi_log/imu"
+    - "ros2 launch bxi_example_py_elf3 example_launch_suspended_tests_hw.launch.py start_remote_controller:=false enable_imu:=false > /var/log/bxi_log/$(date +%Y-%m-%d_%H-%M-%S)_elf.log 2>&1 &"
+    - "bash -c 'imu_log=/var/log/bxi_log/imu/imu_$(date +%Y-%m-%d_%H-%M-%S).log; exec \"$(ros2 pkg prefix remote_controller)/share/remote_controller/scripts/start_imu_if_owned.sh\" \"$imu_log\"' > /var/log/bxi_log/imu/guard_$(date +%Y-%m-%d_%H-%M-%S).log 2>&1 &"
     - "ros2 launch bxi_example_bms bms.launch.py > /var/log/bxi_log/bms_$(date +%Y-%m-%d_%H-%M-%S)_bms.log 2>&1 &"
   stop:
-    - "killall -SIGINT hardware_elf3 bxi_example_hw bxi_example_py_elf3 bxi_example_py_elf3_demo bxi_example_py_elf3_vibration bxi_example_py_elf3_suspended_tests bxi_bms bxi_example_bms 2>/dev/null"
-    - "sleep 1"
+    - "pkill -SIGINT -f '[r]os2 launch bxi_example_py_elf3 example_launch_suspended_tests_hw[.]launch[.]py|[h]ardware_elf3|[b]xi_example_py_elf3_suspended_tests|[/]start_imu_if_owned[.]sh|[/]imu_publisher_guard|[r]os2 launch bxi_imu imu[.]launch[.]py|[/]imu_node' || true"
+    - "pkill -SIGINT -f '[r]os2 launch bxi_example_bms bms[.]launch[.]py|[/]bxi_bms|[/]bxi_example_bms' || true"
+    - "sleep 2"
+    - "pkill -SIGTERM -f '[r]os2 launch bxi_example_py_elf3 example_launch_suspended_tests_hw[.]launch[.]py|[h]ardware_elf3|[b]xi_example_py_elf3_suspended_tests|[/]start_imu_if_owned[.]sh|[/]imu_publisher_guard|[r]os2 launch bxi_imu imu[.]launch[.]py|[/]imu_node' || true"
 
 system_mutexes:
   robot_process:
