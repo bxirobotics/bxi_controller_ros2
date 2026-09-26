@@ -93,6 +93,17 @@ states:
       icon: do_not_disturb_on
       confirm: true
       confirm_message: 所有电机进入零力矩模式，机器人将完全失去支撑能力，请确保机器人处于安全状态
+  imu_protection:
+    manifest:
+      label: IMU失联保护
+      priority: 2000
+      group: Safety
+      icon: health_and_safety
+      confirm_message: imu故障，不可恢复状态
+    params:
+      # Hold the pose at IMU loss with low stiffness to resist natural falling.
+      kp: 20.0
+      kd: 1.0
   pd_brake:
     manifest:
       label: 初始姿态
