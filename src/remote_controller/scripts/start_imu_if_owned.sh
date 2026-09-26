@@ -11,7 +11,9 @@ hardware_node="${HARDWARE_NODE:-/hardware_elf3}"
 imu_data_wait_seconds="${IMU_DATA_WAIT_SECONDS:-5}"
 
 log() {
-  printf '[imu guard] %s\n' "$*"
+  # Bash formats this with its built-in printf: startup decisions stay easy to
+  # correlate with the ROS logs without spawning date for every log line.
+  printf '[%(%Y-%m-%dT%H:%M:%S%z)T] [imu guard] %s\n' -1 "$*"
 }
 
 mkdir -p "$(dirname "$log_file")"
@@ -40,11 +42,17 @@ esac
 
 bxi_imu_prefix="$(ros2 pkg prefix bxi_imu 2>/dev/null || true)"
 bxi_imu_executable="${bxi_imu_prefix:+$bxi_imu_prefix/lib/bxi_imu/imu_node}"
+remote_controller_prefix="$(ros2 pkg prefix remote_controller 2>/dev/null || true)"
+imu_publisher_guard="${remote_controller_prefix:+$remote_controller_prefix/lib/remote_controller/imu_publisher_guard}"
 log "bxi_imu package found"
 
 if [ -z "$bxi_imu_prefix" ] || [ ! -d "${bxi_imu_prefix:+$bxi_imu_prefix/share/bxi_imu/modules}" ] ||
   [ ! -x "$bxi_imu_executable" ]; then
   log "bxi_imu is not installed completely; refusing to start the fallback"
+  exit 1
+fi
+if [ -z "$remote_controller_prefix" ] || [ ! -x "$imu_publisher_guard" ]; then
+  log "imu_publisher_guard is not installed; refusing to start bxi_imu without publisher ownership checks"
   exit 1
 fi
 
@@ -150,22 +158,36 @@ ros2 launch bxi_imu imu.launch.py \
   baudrate:="$baudrate" &
 bxi_imu_pid=$!
 
-# The hardware node may expose a publisher even when it has not produced a
-# message yet. Check the graph after starting the fallback and keep checking
-# while it runs, so two publishers cannot silently coexist on the same topic.
+# A graph publisher alone does not prove that hardware_elf3 produces IMU data.
+# The guard checks message Publisher GIDs and exits only after hardware_elf3
+# has sent a consecutive burst of actual IMU frames.
+log "monitoring hardware publisher activity by GID while bxi_imu is running"
+"$imu_publisher_guard" --ros-args \
+  -p "imu_topic:=$imu_topic" \
+  -p "hardware_node:=$hardware_node" \
+  -p min_hardware_frames:=3 \
+  -p hardware_frame_window_ms:=500 &
+imu_guard_pid=$!
+
 while kill -0 "$bxi_imu_pid" 2>/dev/null; do
-  publisher_count="$(
-    ros2 topic info "$imu_topic" 2>/dev/null |
-      awk '/Publisher count:/ {print $3; exit}'
-  )"
-  if [[ "$publisher_count" =~ ^[0-9]+$ ]] && [ "$publisher_count" -gt 1 ]; then
-    log "publisher safety check failed: $imu_topic has $publisher_count publishers"
-    log "stopping bxi_imu fallback to prevent multiple IMU publishers"
-    kill -SIGINT "$bxi_imu_pid" 2>/dev/null || true
-    wait "$bxi_imu_pid" 2>/dev/null || true
-    exit 1
+  if ! kill -0 "$imu_guard_pid" 2>/dev/null; then
+    wait "$imu_guard_pid"
+    imu_guard_status=$?
+    if [ "$imu_guard_status" -eq 10 ]; then
+      log "hardware IMU publisher is actively sending frames; stopping bxi_imu fallback"
+      kill -SIGINT "$bxi_imu_pid" 2>/dev/null || true
+      wait "$bxi_imu_pid" 2>/dev/null || true
+      exit 0
+    else
+      log "IMU publisher guard exited unexpectedly with status=$imu_guard_status; stopping bxi_imu fallback"
+      kill -SIGINT "$bxi_imu_pid" 2>/dev/null || true
+      wait "$bxi_imu_pid" 2>/dev/null || true
+      exit 1
+    fi
   fi
-  sleep 1
+  sleep 0.1
 done
 
+kill -SIGINT "$imu_guard_pid" 2>/dev/null || true
+wait "$imu_guard_pid" 2>/dev/null || true
 wait "$bxi_imu_pid"
