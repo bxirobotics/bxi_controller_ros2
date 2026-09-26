@@ -1,0 +1,74 @@
+schema: 1
+id: com.bxi.basic_actions
+name: 基础动作
+version: 1.0.0
+api: ">=4,<5"
+enable: true
+entrypoint: plugin:create_mod
+visibility: public
+requires: []
+conflicts: []
+python_exports: []
+runtime_requirements:
+  python: []
+  ros: [{package: rclpy}, {package: geometry_msgs}]
+  system: []
+
+events:
+  normal: {slot: btn_1, value: 1}
+  zero_torque: {slot: btn_2, value: 1}
+  pd_brake: {slot: btn_3, value: 1}
+  initial_pos: {slot: btn_4, value: 1}
+  recover: {slot: btn_6, value: 1}
+
+speed_profiles:
+  normal: {vx_scale: 1.0, vx_min: -1.0, vx_max: 1.0, vy_scale: 0.5, yaw_scale: 1.5}
+
+states:
+  normal:
+    manifest: {label: 走路, priority: 1000, group: Base}
+    speed_profile: normal
+  zero_torque:
+    manifest:
+      label: 零力矩
+      priority: 990
+      group: Base
+      confirm: true
+      confirm_message: 所有电机进入零力矩模式，机器人将完全失去支撑能力，请确保机器人处于安全状态
+  imu_protection:
+    manifest:
+      label: IMU失联保护
+      priority: 2000
+      group: Safety
+      confirm_message: imu故障，不可恢复状态
+    params: {kp: 20.0, kd: 1.0}
+  pd_brake:
+    manifest:
+      label: 初始姿态
+      priority: 980
+      group: Base
+      confirm: true
+      confirm_message: 机器人将进入初始姿态，所有电机进入PD制动模式，失去支撑能力，请确保机器人处于安全状态
+  initial_pos:
+    manifest: {label: 零位模式, priority: 960, group: Base}
+  recover:
+    manifest:
+      label: 起身
+      priority: 940
+      group: Advanced
+      confirm: true
+      confirm_message: 请确保机器人周围1米范围内没有障碍物
+
+routes:
+  - {from: pd_brake, event: normal, to: normal, transition: soft_switch}
+  - {from: normal, event: zero_torque, to: zero_torque}
+  - {from: pd_brake, event: zero_torque, to: zero_torque}
+  - {from: initial_pos, event: zero_torque, to: zero_torque}
+  - {from: recover, event: zero_torque, to: zero_torque}
+  - {from: normal, event: pd_brake, to: pd_brake, transition: first_frame_switch}
+  - {from: zero_torque, event: pd_brake, to: pd_brake, transition: first_frame_switch}
+  - {from: initial_pos, event: pd_brake, to: pd_brake, transition: first_frame_switch}
+  - {from: normal, event: initial_pos, to: initial_pos, transition: first_frame_switch}
+  - {from: zero_torque, event: initial_pos, to: initial_pos, transition: first_frame_switch}
+  - {from: pd_brake, event: initial_pos, to: initial_pos, transition: first_frame_switch}
+  - {from: pd_brake, event: recover, to: recover, transition: {profile: dual_running_blend, duration: 1.0}}

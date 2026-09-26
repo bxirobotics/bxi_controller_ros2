@@ -1,347 +1,594 @@
+from bxi_example_py_elf3.framework.platform.cpu_affinity import (
+    bootstrap_process_scheduling,
+    CpuAffinityPlan,
+)
+
+_CPU_AFFINITY_PLAN = bootstrap_process_scheduling()
+
 import rclpy
 from rclpy.node import Node
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.qos import QoSProfile, qos_profile_sensor_data
-from rclpy.time import Time
 import communication.msg as bxiMsg
 import communication.srv as bxiSrv
-import nav_msgs.msg 
+import nav_msgs.msg
 import sensor_msgs.msg
-from threading import Lock
+from threading import Event, Lock
 import numpy as np
-# import torch
+
 import time
-import sys
-import os
 import math
+import os
+import json
 from collections import deque
-from std_msgs.msg import Header
+from pathlib import Path
+from std_msgs.msg import String
 from geometry_msgs.msg import Pose
 from sensor_msgs.msg import JointState
-import json
+from ament_index_python.packages import get_package_share_directory
 
-import onnxruntime as ort
+from bxi_example_py_elf3.framework.runtime.state_machine import load_state_machine_config
+from bxi_example_py_elf3.framework.joints import (
+    JointCommandDefaults,
+    JointDefault,
+    JointLayout,
+    JointStateBuffer,
+    NamedJointCommandOverride,
+)
+from bxi_example_py_elf3.framework.mod_api import MotorFrame
+from bxi_example_py_elf3.framework.platform import (
+    NamedJointStateSource,
+    RobotControlRuntime,
+    RobotObservation,
+)
 
 robot_name = "elf3"
 
-dof_num = 29
+ELF3_RESET_JOINTS = JointLayout(
+    (
+        "waist_y_joint",
+        "waist_x_joint",
+        "waist_z_joint",
+        "l_hip_y_joint",
+        "l_hip_x_joint",
+        "l_hip_z_joint",
+        "l_knee_y_joint",
+        "l_ankle_y_joint",
+        "l_ankle_x_joint",
+        "r_hip_y_joint",
+        "r_hip_x_joint",
+        "r_hip_z_joint",
+        "r_knee_y_joint",
+        "r_ankle_y_joint",
+        "r_ankle_x_joint",
+        "l_shoulder_y_joint",
+        "l_shoulder_x_joint",
+        "l_shoulder_z_joint",
+        "l_elbow_y_joint",
+        "l_wrist_x_joint",
+        "l_wrist_y_joint",
+        "l_wrist_z_joint",
+        "r_shoulder_y_joint",
+        "r_shoulder_x_joint",
+        "r_shoulder_z_joint",
+        "r_elbow_y_joint",
+        "r_wrist_x_joint",
+        "r_wrist_y_joint",
+        "r_wrist_z_joint",
+        "head_z_joint",
+        "head_y_joint",
+    ),
+    label="ELF3 simulation reset",
+)
 
-dof_use = 23
+dof_num = ELF3_RESET_JOINTS.dof_num
+joint_name = ELF3_RESET_JOINTS.names
 
-joint_name = (
-    "waist_y_joint",
-    "waist_x_joint",
-    "waist_z_joint",
-    
-    "l_hip_y_joint",   # 左腿_髋关节_z轴
-    "l_hip_x_joint",   # 左腿_髋关节_x轴
-    "l_hip_z_joint",   # 左腿_髋关节_y轴
-    "l_knee_y_joint",   # 左腿_膝关节_y轴
-    "l_ankle_y_joint",   # 左腿_踝关节_y轴
-    "l_ankle_x_joint",   # 左腿_踝关节_x轴
+# The current ELF3 state message contains two head joints that the original
+# 29-joint policies do not command. A future 31-joint policy overrides these
+# values naturally because defaults are only applied to omitted joints. Name
+# lookup is compiled once; the control-cycle path performs no dictionary lookup.
+ELF3_COMMAND_DEFAULTS = JointCommandDefaults(
+    {
+        "head_y_joint": JointDefault(position=0.0, kp=16.747, kd=1.066),
+        "head_z_joint": JointDefault(position=0.0, kp=16.747, kd=1.066),
+    }
+)
 
-    "r_hip_y_joint",   # 右腿_髋关节_z轴    
-    "r_hip_x_joint",   # 右腿_髋关节_x轴
-    "r_hip_z_joint",   # 右腿_髋关节_y轴
-    "r_knee_y_joint",   # 右腿_膝关节_y轴
-    "r_ankle_y_joint",   # 右腿_踝关节_y轴
-    "r_ankle_x_joint",   # 右腿_踝关节_x轴
-
-    "l_shoulder_y_joint",   # 左臂_肩关节_y轴
-    "l_shoulder_x_joint",   # 左臂_肩关节_x轴
-    "l_shoulder_z_joint",   # 左臂_肩关节_z轴
-    "l_elbow_y_joint",   # 左臂_肘关节_y轴
-    "l_wrist_x_joint",
-    "l_wrist_y_joint",
-    "l_wrist_z_joint",
-    
-    "r_shoulder_y_joint",   # 右臂_肩关节_y轴   
-    "r_shoulder_x_joint",   # 右臂_肩关节_x轴
-    "r_shoulder_z_joint",   # 右臂_肩关节_z轴
-    "r_elbow_y_joint",    # 右臂_肘关节_y轴
-    "r_wrist_x_joint",
-    "r_wrist_y_joint",
-    "r_wrist_z_joint",
-    )   
-
-joint_kp = np.array([
-    108.448, 162.672, 176.421,
-    176.421, 176.421,  54.224, 176.421,  33.493,  21.771,
-    176.421, 176.421,  54.224, 176.421,  33.493,  21.771,
-    54.224,  54.224,  16.747, 54.224,  16.747,  16.747,  16.747,
-    54.224,  54.224,  16.747, 54.224,  16.747,  16.747,  16.747],
-    dtype=np.float32)
-
-joint_kd = np.array([
-    6.904, 10.356, 11.231,
-    11.231, 11.231,  3.452, 11.231,  2.132,  1.386,
-    11.231, 11.231,  3.452, 11.231,  2.132,  1.386,
-    3.452,  3.452,  1.066,  3.452,  1.066,  1.066,  1.066,
-    3.452,  3.452,  1.066,  3.452,  1.066,  1.066,  1.066],
-    dtype=np.float32)
-
-joint_nominal_pos = np.array([   # 默认关节角度，来自 bxi_example_py_elf3_demo-2
-    0.0, 0.0, 0.0,
-    -0.3, 0.0, 0.0, 0.6, -0.3, 0.0,
-    -0.3, 0.0, 0.0, 0.6, -0.3, 0.0,
-    0.2,  0.2, 0.0, 0.6, 0.0, 0.0, 0.0,
-    0.2, -0.2, 0.0, 0.6, 0.0, 0.0, 0.0],
-    dtype=np.float32)
-
-class env_cfg():
-    """
-    Configuration class for the XBotL humanoid robot.
-    """
-    class env():
-        frame_stack = 15  # 历史观测帧数
-        num_single_obs = (47+(3*11))  # 单帧观测数
-        num_observations = int(frame_stack * num_single_obs)  # 总观测空间 (66×47)
-        num_actions = (12+11)  # 动作数
-        num_commands = 5 # sin[2] vx vy vz
-
-    class init_state():
-
-        default_joint_angles = {
-            "waist_y_joint": 0.0,
-            "waist_x_joint": 0.0,
-            "waist_z_joint": 0.0,
-            
-            'l_hip_z_joint': -0.4,
-            'l_hip_x_joint': 0.0,
-            'l_hip_y_joint': 0.0,
-            'l_knee_y_joint': 0.8,
-            'l_ankle_y_joint': -0.4,
-            'l_ankle_x_joint': 0.0,
-            
-            'r_hip_z_joint': -0.4,
-            'r_hip_x_joint': 0.0,
-            'r_hip_y_joint': 0.0,
-            'r_knee_y_joint': 0.8,
-            'r_ankle_y_joint': -0.4,
-            'r_ankle_x_joint': 0.0,
-            
-            'l_shoulder_y_joint': 0.5,
-            'l_shoulder_x_joint': 0.3,
-            'l_shoulder_z_joint': -0.2,
-            'l_elbow_y_joint': -1.5,
-            
-            'r_shoulder_y_joint': 0.5,
-            'r_shoulder_x_joint': -0.0,
-            'r_shoulder_z_joint': 0.2,
-            'r_elbow_y_joint': -1.5,
-        }
-
-    class control():
-        action_scale = 0.5
-        
-    class commands():
-        stand_com_threshold = 0.05 # if (lin_vel_x, lin_vel_y, ang_vel_yaw).norm < this, robot should stand
-        sw_switch = True # use stand_com_threshold or not
-
-    class rewards:
-        cycle_time = 0.6
-
-    class normalization:
-        class obs_scales:
-            lin_vel = 2.
-            ang_vel = 1.
-            dof_pos = 1.
-            dof_vel = 0.05
-            quat = 1.
-        clip_observations = 100.
-        clip_actions = 100.
-
-class cfg():
-
-    class robot_config:
-        default_dof_pos = np.array(list(env_cfg.init_state.default_joint_angles.values()))   
-
-def quaternion_to_euler_array(quat):
-    # Ensure quaternion is in the correct format [x, y, z, w]
-    x, y, z, w = quat
-    
-    # Roll (x-axis rotation)
-    t0 = +2.0 * (w * x + y * z)
-    t1 = +1.0 - 2.0 * (x * x + y * y)
-    roll_x = np.arctan2(t0, t1)
-    
-    # Pitch (y-axis rotation)
-    t2 = +2.0 * (w * y - z * x)
-    t2 = np.clip(t2, -1.0, 1.0)
-    pitch_y = np.arcsin(t2)
-    
-    # Yaw (z-axis rotation)
-    t3 = +2.0 * (w * z + x * y)
-    t4 = +1.0 - 2.0 * (y * y + z * z)
-    yaw_z = np.arctan2(t3, t4)
-    
-    # Returns roll, pitch, yaw in a NumPy array in radians
-    return np.array([roll_x, pitch_y, yaw_z])
 
 class BxiExample(Node):
+    def __init__(self, *, cpu_affinity_plan: CpuAffinityPlan):
+        super().__init__("bxi_example_py")
 
-    def __init__(self):
+        self._shutting_down = Event()
 
-        super().__init__('bxi_example_py')
+        # 加载运行参数
+        self.load_files()
 
-        self.declare_parameter('/topic_prefix', 'default_value')
-        self.topic_prefix = self.get_parameter('/topic_prefix').get_parameter_value().string_value
-        print('topic_prefix:', self.topic_prefix)
-        
-        qos = QoSProfile(depth=1, durability=qos_profile_sensor_data.durability, reliability=qos_profile_sensor_data.reliability)
-        
-        self.act_pub = self.create_publisher(bxiMsg.ActuatorCmds, self.topic_prefix+'actuators_cmds', qos)  # CHANGE
-        
-        self.odom_sub = self.create_subscription(nav_msgs.msg.Odometry, self.topic_prefix+'odom', self.odom_callback, qos)
-        self.joint_sub = self.create_subscription(sensor_msgs.msg.JointState, self.topic_prefix+'joint_states', self.joint_callback, qos)
-        self.imu_sub = self.create_subscription(sensor_msgs.msg.Imu, self.topic_prefix+'imu_data', self.imu_callback, qos)
-        self.touch_sub = self.create_subscription(bxiMsg.TouchSensor, self.topic_prefix+'touch_sensor', self.touch_callback, qos)
-        self.joy_sub = self.create_subscription(bxiMsg.MotionCommands, 'motion_commands', self.joy_callback, qos)
+        self._motor_override = NamedJointCommandOverride(
+            timeout_sec=self.motor_override_timeout_sec,
+            release_blend_sec=self.motor_override_release_blend_sec,
+        )
+        self._motor_override_last_names: tuple[str, ...] = ()
+        self._motor_override_last_error = ""
+        self._motor_override_waiting_for_joints_warned = False
 
-        self.rest_srv = self.create_client(bxiSrv.RobotReset, self.topic_prefix+'robot_reset')
-        self.sim_rest_srv = self.create_client(bxiSrv.SimulationReset, self.topic_prefix+'sim_reset')
-        
-        self.timer_callback_group_1 = MutuallyExclusiveCallbackGroup()
-        
-        self.vx = 0.0
-        self.vy = 0
-        self.dyaw = 0
-    
+        # 订阅发布ros主题
+        self.init_pub_sub()
+        self._actuator_publisher_conflict = False
+        self._actuator_publisher_guard_timer = self.create_timer(
+            1.0,
+            self._check_actuator_publishers,
+            callback_group=self.status_callback_group,
+        )
+
+        # 机器人状态变量(robot states)
+        self.omega = np.zeros(3, dtype=np.double)
+        self.linear_acceleration = np.zeros(3, dtype=np.double)
+        self.quat_xyzw = np.zeros(4, dtype=np.double)
+        self.quat_wxyz = np.zeros(4, dtype=np.double)
+        self._imu_received = False
+        self._imu_last_received_at = None
+        self._imu_protection_latched = False
+        self._imu_first_received_logged = False
+        self._imu_invalid_frame_count = 0
+        self._next_imu_invalid_warning = 0.0
+        self._imu_startup_started_at = None
+        self._imu_startup_timeout_logged = False
+        self._next_imu_startup_warning = 0.0
+        self.raw_cmd_vel = np.zeros(3, dtype=np.float32)
+        self.pending_remote_events = deque()
+        self._joint_source = NamedJointStateSource(dtype=np.float64)
+        self._joint_received = False
+        self._bad_joint_state_warned = False
+        self._joint_snapshot: JointStateBuffer | None = None
+        self._quat_xyzw_snapshot = np.zeros(4, dtype=np.float64)
+        self._quat_wxyz_snapshot = np.zeros(4, dtype=np.float64)
+        self._omega_snapshot = np.zeros(3, dtype=np.float64)
+        self._linear_acceleration_snapshot = np.zeros(3, dtype=np.float64)
+        self._cmd_snapshot = np.zeros(3, dtype=np.float32)
+        self._observation: RobotObservation | None = None
+
+        # 控制循环初始化
         self.step = 0
-        self.loop_count = 0
-        self.dt = 0.02  # loop @100Hz
-        self.timer = self.create_timer(self.dt, self.timer_callback, callback_group=self.timer_callback_group_1)
+        self._second_reset_at = 0.0
+        self._reset_future = None
+        self._reset_pending_step = 0
+        self._reset_sent_at = 0.0
+        self._reset_retry_after_at = 0.0
+        self.runtime = RobotControlRuntime(
+            self.state_machine_config,
+            built_in_mod_root=self.package_share / "mods",
+            command_defaults=ELF3_COMMAND_DEFAULTS,
+            ros_node=self,
+            platform=self,
+            cpu_affinity_plan=cpu_affinity_plan,
+            fatal_callback=self._on_control_fatal,
+        )
+        self.state_machine_info_timer = None
+        if self.state_machine_info_hz > 0.0:
+            self.state_machine_info_timer = self.create_timer(
+                1.0 / self.state_machine_info_hz,
+                self.publish_state_machine_info,
+                callback_group=self.status_callback_group,
+            )
 
-        self.data_txt_path = '/home/bxi/BXI/robot_vibration testing/bxi_rl_controller_ros2_example/src/bxi_example_py_elf3/data/data.txt'
-        self.pos_data_lines = self.load_pos_file()
-        self.pos_data_index = 0
+    def load_files(self):
+        self.declare_parameter("/topic_prefix", "default_value")
+        self.topic_prefix = (
+            self.get_parameter("/topic_prefix").get_parameter_value().string_value
+        )
 
-        self.dance_flag_prev = False
-        self.dance_mode = False
+        self.package_share = Path(get_package_share_directory("bxi_example_py_elf3"))
+        self.declare_parameter(
+            "/state_machine_config",
+            os.path.join(
+                self.package_share,
+                "config",
+                "elf3_state_machine.yaml",
+            ),
+        )
+        state_machine_config_path = self.get_parameter("/state_machine_config").value
+        self.state_machine_config = load_state_machine_config(state_machine_config_path)
 
-    def load_pos_file(self):
-        try:
-            with open(self.data_txt_path, 'r', encoding='utf-8') as f:
-                lines = [line.strip() for line in f if line.strip()]
-            if len(lines) == 0:
-                self.get_logger().warning(f'pos file found but empty: {self.data_txt_path}')
-            else:
-                self.get_logger().info(f'loaded {len(lines)} pose lines from {self.data_txt_path}')
-            return lines
-        except FileNotFoundError:
-            self.get_logger().warning(f'pos file not found: {self.data_txt_path}')
-            return []
-        except Exception as e:
-            self.get_logger().error(f'failed to load pos file: {e}')
-            return []
+        self.declare_parameter("/state_machine_info_topic", "")
+        self.state_machine_info_topic = (
+            self.get_parameter("/state_machine_info_topic")
+            .get_parameter_value()
+            .string_value
+        )
 
-    def get_next_pos_from_file(self):
-        if not self.pos_data_lines:
-            return None
+        self.declare_parameter("/state_machine_info_hz", 10.0)
+        self.state_machine_info_hz = float(
+            self.get_parameter("/state_machine_info_hz").value
+        )
 
-        if self.pos_data_index >= len(self.pos_data_lines):
-            # return None
-            self.pos_data_index = 0
-            # 如果希望循环播放，则从头开始读取；如果不希望循环，则改成返回 None
+        self.imu_required = self.topic_prefix.startswith("hardware/")
+        self.declare_parameter("/release_suspension", True)
+        self.release_suspension = bool(
+            self.get_parameter("/release_suspension").value
+        )
+        self.declare_parameter("/imu_startup_timeout_sec", 15.0)
+        self.imu_startup_timeout_sec = float(
+            self.get_parameter("/imu_startup_timeout_sec").value
+        )
+        self.declare_parameter("/imu_runtime_timeout_sec", 0.1)
+        self.imu_runtime_timeout_sec = float(
+            self.get_parameter("/imu_runtime_timeout_sec").value
+        )
+        if self.imu_runtime_timeout_sec <= 0.0:
+            raise ValueError("/imu_runtime_timeout_sec must be positive")
+        self.declare_parameter("/imu_protection_allow_release", False)
+        self.imu_protection_allow_release = bool(
+            self.get_parameter("/imu_protection_allow_release").value
+        )
 
-        line = self.pos_data_lines[self.pos_data_index]
-        self.pos_data_index += 1
-        clean_line = line.strip()
-        if clean_line.startswith('[') and clean_line.endswith(']'):
-            clean_line = clean_line[1:-1].strip()
+        self.motor_override_topic = self.topic_prefix + "actuators_cmds_override"
+        self.motor_override_timeout_sec = 0.2
+        self.motor_override_release_blend_sec = 0.2
+        self.motor_override_allow_in_zero_torque = False
 
-        if ',' in clean_line:
-            tokens = [tok.strip() for tok in clean_line.split(',') if tok.strip()]
-        else:
-            tokens = [tok.strip() for tok in clean_line.split() if tok.strip()]
+    def _on_control_fatal(self, _message: str):
+        self._shutting_down.set()
+        rclpy.try_shutdown()
 
-        try:
-            values = [float(x) for x in tokens]
-        except ValueError as e:
-            self.get_logger().error(f'failed to parse pos line {self.pos_data_index}: {e} -> {repr(line)}')
-            self.pos_data_lines = []
-            return None
+    def destroy_node(self):
+        self._shutting_down.set()
+        runtime = getattr(self, "runtime", None)
+        if runtime is not None:
+            try:
+                runtime.close()
+            except Exception as exc:
+                self.get_logger().warning(f"control runtime cleanup failed: {exc}")
+        return super().destroy_node()
 
-        if len(values) != dof_num:
-            self.get_logger().error(f'expected {dof_num} values, got {len(values)} on line {self.pos_data_index}')
-            self.pos_data_lines = []
-            return None
+    # ---------------------------------------------------------------------------- #
+    #                                    ROS话题部分                                   #
+    # ---------------------------------------------------------------------------- #
+    def init_pub_sub(self):
+        # 订阅和发布主题
+        self.io_callback_group = MutuallyExclusiveCallbackGroup()
+        self.status_callback_group = MutuallyExclusiveCallbackGroup()
+        qos = QoSProfile(
+            depth=1,
+            durability=qos_profile_sensor_data.durability,
+            reliability=qos_profile_sensor_data.reliability,
+        )
 
-        return np.array(values, dtype=np.float32)
+        self.act_pub = self.create_publisher(
+            bxiMsg.ActuatorCmds, self.topic_prefix + "actuators_cmds", qos
+        )  # CHANGE
+        state_machine_info_topic = self.state_machine_info_topic or (
+            self.topic_prefix + "state_machine_info"
+        )
+        self.state_machine_info_pub = self.create_publisher(
+            String, state_machine_info_topic, 10
+        )
 
-    def timer_callback(self):
-        
-        # ptyhon 与 rclpy 多线程不太友好，这里使用定时间+简易状态机运行a
+        self.odom_sub = self.create_subscription(
+            nav_msgs.msg.Odometry,
+            self.topic_prefix + "odom",
+            self.odom_callback,
+            qos,
+            callback_group=self.io_callback_group,
+        )
+        self.actuator_sub = self.create_subscription(
+            bxiMsg.ActuatorStates,
+            self.topic_prefix + "actuator_states",
+            self.actuator_callback,
+            qos,
+            callback_group=self.io_callback_group,
+        )
+        self.imu_sub = self.create_subscription(
+            sensor_msgs.msg.Imu,
+            self.topic_prefix + "imu_data",
+            self.imu_callback,
+            qos,
+            callback_group=self.io_callback_group,
+        )
+        self.touch_sub = self.create_subscription(
+            bxiMsg.TouchSensor,
+            self.topic_prefix + "touch_sensor",
+            self.touch_callback,
+            qos,
+            callback_group=self.io_callback_group,
+        )
+        self.joy_sub = self.create_subscription(
+            bxiMsg.MotionCommands,
+            "motion_commands",
+            self.joy_callback,
+            qos,
+            callback_group=self.io_callback_group,
+        )
+        self.motor_override_sub = self.create_subscription(
+            bxiMsg.ActuatorCmds,
+            self.motor_override_topic,
+            self.motor_override_callback,
+            qos,
+            callback_group=self.io_callback_group,
+        )
+
+        self.rest_srv = self.create_client(
+            bxiSrv.RobotReset, self.topic_prefix + "robot_reset"
+        )
+        self.sim_rest_srv = self.create_client(
+            bxiSrv.SimulationReset, self.topic_prefix + "sim_reset"
+        )
+
+        self.lock_in = Lock()
+        self.lock_ou = self.lock_in  # Lock()
+
+        self.get_logger().info(
+            "motor override input: "
+            f"topic={self.motor_override_topic}, "
+            f"timeout={self.motor_override_timeout_sec:.3f}s, "
+            f"release_blend={self.motor_override_release_blend_sec:.3f}s, "
+            "allow_in_zero_torque="
+            f"{self.motor_override_allow_in_zero_torque}"
+        )
+
+    # --------------------------- Runtime 平台适配接口 --------------------------- #
+
+    def startup_step(self, now: float) -> bool:
+        """Perform the ELF3-specific two-stage reset before control starts."""
+        if self.imu_required and not self._imu_received:
+            if self._imu_startup_started_at is None:
+                self._imu_startup_started_at = now
+            elif (
+                not self._imu_startup_timeout_logged
+                and now - self._imu_startup_started_at >= self.imu_startup_timeout_sec
+            ):
+                self.get_logger().error(
+                    f"IMU startup timeout: no data received on "
+                    f"{self.topic_prefix + 'imu_data'} after "
+                    f"{self.imu_startup_timeout_sec:.1f}s"
+                )
+                self._imu_startup_timeout_logged = True
+            if now >= self._next_imu_startup_warning:
+                self.get_logger().warning(
+                    f"waiting for IMU data on {self.topic_prefix + 'imu_data'} "
+                    "before control startup"
+                )
+                self._next_imu_startup_warning = now + 2.0
+            return False
         if self.step == 0:
-            self.robot_reset(1, False) # first reset
-            print('robot reset 1!')
-            self.step = 1
-            return
-        elif self.step == 1 and self.loop_count >= (2./self.dt): # 延迟10s
-            self.robot_reset(2, False) # first reset
-            print('robot reset 2!')
-            self.loop_count = 0
-            self.step = 2
-            return
-        
+            if self._reset_pending_step == 1:
+                if not self._reset_request_completed(1, now):
+                    return False
+                self.get_logger().info("robot reset step 1 acknowledged")
+                self._second_reset_at = now + 1.0
+                self.step = 1
+            elif now >= self._reset_retry_after_at and self.robot_reset(1, False):
+                self.get_logger().info("robot reset step 1 requested")
+            return False
         if self.step == 1:
-            soft_start = self.loop_count/(1./self.dt) # 1秒关节缓启动
-            if soft_start > 1:
-                soft_start = 1
-                
-            soft_joint_kp = joint_kp * soft_start
-            soft_joint_kd = joint_kd 
-                
-            msg = bxiMsg.ActuatorCmds()
-            msg.header.frame_id = robot_name
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.actuators_name = joint_name
-            msg.pos = joint_nominal_pos.tolist()
-            msg.vel = np.zeros(dof_num, dtype=np.float32).tolist()
-            msg.torque = np.zeros(dof_num, dtype=np.float32).tolist()
-            msg.kp = soft_joint_kp.tolist()
-            msg.kd = soft_joint_kd.tolist()
-            self.act_pub.publish(msg)
-            
-        elif self.step == 2:
-            count_lowlevel = self.loop_count
-            
-            qpos = joint_nominal_pos.copy()
+            if now < self._second_reset_at:
+                return False
+            if self._reset_pending_step == 2:
+                if not self._reset_request_completed(2, now):
+                    return False
+                self.get_logger().info("robot reset step 2 acknowledged")
+            elif now >= self._reset_retry_after_at and self.robot_reset(
+                2, self.release_suspension
+            ):
+                self.get_logger().info("robot reset step 2 requested")
+                return False
+            else:
+                return False
+            self.step = 2
+            if self.topic_prefix.find("simulation") != -1:
+                self.runtime.request_state(
+                    "com.bxi.basic_actions/pd_brake", trigger="AutoPdbreak"
+                )
+                self.runtime.request_state(
+                    "com.bxi.basic_actions/normal", trigger="AutoRelease"
+                )
+            return False
+        with self.lock_in:
+            return self._joint_received
 
-            if self.dance_mode == True:
-                if self.pos_data_lines:
-                    qpos_file = self.get_next_pos_from_file()
-                    if qpos_file is not None:
-                        qpos = qpos_file
-                        qpos[16] += 0.1
-                        qpos[23] -= 0.1
-            
-            msg = bxiMsg.ActuatorCmds()
-            msg.header.frame_id = robot_name
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.actuators_name = joint_name
-            msg.pos = qpos.tolist()
-            msg.vel = np.zeros(dof_num, dtype=np.float32).tolist()
-            msg.torque = np.zeros(dof_num, dtype=np.float32).tolist()
-            msg.kp = joint_kp.tolist()
-            msg.kd = joint_kd.tolist()
-            self.act_pub.publish(msg)
+    def snapshot_control_inputs(self):
+        """Copy the latest ROS inputs into one coherent framework observation."""
+        self._check_imu_runtime_safety()
+        with self.lock_in:
+            latest_joints = self._joint_source.view
+            if self._joint_snapshot is None:
+                self._joint_snapshot = JointStateBuffer(
+                    latest_joints.layout,
+                    dtype=np.float64,
+                )
+                self._observation = RobotObservation(
+                    joints=self._joint_snapshot.view,
+                    quat_xyzw=self._quat_xyzw_snapshot,
+                    quat_wxyz=self._quat_wxyz_snapshot,
+                    omega=self._omega_snapshot,
+                    raw_cmd_vel=self._cmd_snapshot,
+                    linear_acceleration=self._linear_acceleration_snapshot,
+                )
+            self._joint_snapshot.update(
+                latest_joints.position,
+                latest_joints.velocity,
+                timestamp_ns=latest_joints.timestamp_ns,
+            )
+            np.copyto(self._quat_xyzw_snapshot, self.quat_xyzw)
+            np.copyto(self._quat_wxyz_snapshot, self.quat_wxyz)
+            np.copyto(self._omega_snapshot, self.omega)
+            np.copyto(self._linear_acceleration_snapshot, self.linear_acceleration)
+            np.copyto(self._cmd_snapshot, self.raw_cmd_vel)
+            events = (
+                ()
+                if self._imu_protection_latched
+                else tuple(self.pending_remote_events)
+            )
+            self.pending_remote_events.clear()
+        assert self._observation is not None
+        return self._observation, events
 
-        self.loop_count += 1
-    
+    def _check_imu_runtime_safety(self):
+        if not self.imu_required:
+            return
+        now = time.monotonic()
+        with self.lock_in:
+            last_received_at = self._imu_last_received_at
+            imu_received = self._imu_received
+        if not imu_received or last_received_at is None:
+            return
+        if not self._imu_protection_latched and (
+            now - last_received_at >= self.imu_runtime_timeout_sec
+        ):
+            self._imu_protection_latched = True
+            self.get_logger().error(
+                f"IMU data timeout: no frame for {now - last_received_at:.3f}s; "
+                "entering locked IMU protection state"
+            )
+        if not self._imu_protection_latched:
+            return
+        protection_state = "com.bxi.basic_actions/imu_protection"
+        if self.runtime.current_state_name != protection_state:
+            accepted = self.runtime.request_state(
+                protection_state,
+                trigger="imu_timeout",
+                force=True,
+            )
+            if not accepted:
+                self.get_logger().error(
+                    "failed to request locked IMU protection state"
+                )
+
+    def release_imu_protection(
+        self, target_state: str = "com.bxi.basic_actions/zero_torque"
+    ) -> bool:
+        """Reserved recovery interface; disabled until explicitly enabled."""
+        if not self.imu_protection_allow_release:
+            self.get_logger().warning(
+                "IMU protection release requested but the recovery interface is disabled"
+            )
+            return False
+        with self.lock_in:
+            fresh = (
+                self._imu_last_received_at is not None
+                and time.monotonic() - self._imu_last_received_at
+                < self.imu_runtime_timeout_sec
+            )
+        if not fresh:
+            self.get_logger().warning(
+                "IMU protection release rejected because IMU data is still stale"
+            )
+            return False
+        self._imu_protection_latched = False
+        return self.runtime.request_state(
+            target_state,
+            trigger="imu_recovery",
+            force=True,
+        )
+
+    def publish_motor_frame(self, frame: MotorFrame):
+        """Convert a framework motor frame into the ELF3 ROS command message."""
+        if self._actuator_publisher_conflict:
+            return
+        state_name = self.runtime.framework.current_state_name
+        override_permitted = self.motor_override_allow_in_zero_torque or (
+            state_name != "com.bxi.basic_actions/zero_torque"
+        )
+        frame = self._motor_override.apply(
+            frame,
+            now=time.monotonic(),
+            permitted=override_permitted,
+        )
+
+        msg = bxiMsg.ActuatorCmds()
+        msg.header.frame_id = robot_name
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.actuators_name = frame.layout.names
+        msg.pos = frame.qpos.tolist()
+        msg.vel = frame.vel.tolist()
+        msg.torque = frame.torque.tolist()
+        msg.kp = frame.kp.tolist()
+        msg.kd = frame.kd.tolist()
+        self.act_pub.publish(msg)
+
+    def _check_actuator_publishers(self):
+        if self._shutting_down.is_set() or self._actuator_publisher_conflict:
+            return
+        topic = self.topic_prefix + "actuators_cmds"
+        if self.count_publishers(topic) > 1:
+            self._actuator_publisher_conflict = True
+            self.get_logger().error(
+                f"multiple actuator command publishers on {topic}; "
+                "stopping this controller"
+            )
+            self._shutting_down.set()
+            rclpy.try_shutdown()
+
+    def publish_state_machine_info(self):
+        info = self.runtime.snapshot(include_graph=True)
+        if info is None:
+            return
+        now = self.get_clock().now()
+        info.update(
+            {
+                "stamp": {
+                    "sec": int(now.nanoseconds // 1000000000),
+                    "nanosec": int(now.nanoseconds % 1000000000),
+                },
+                "step": int(self.step),
+            }
+        )
+
+        msg = String()
+        msg.data = json.dumps(info, ensure_ascii=False, sort_keys=True)
+        self.state_machine_info_pub.publish(msg)
+
     def robot_reset(self, reset_step, release):
         req = bxiSrv.RobotReset.Request()
         req.reset_step = reset_step
         req.release = release
         req.header.frame_id = robot_name
-    
-        while not self.rest_srv.wait_for_service(timeout_sec=1.0):
-            print('service not available, waiting again...')
-            
-        self.rest_srv.call_async(req)
-        
-    def sim_robot_reset(self):        
+
+        while not self.rest_srv.wait_for_service(timeout_sec=0.2):
+            if self._shutting_down.is_set() or not rclpy.ok():
+                return False
+            self.get_logger().info("robot reset service not available; waiting")
+
+        self._reset_future = self.rest_srv.call_async(req)
+        self._reset_pending_step = reset_step
+        self._reset_sent_at = time.monotonic()
+        return True
+
+    def _reset_request_completed(self, expected_step, now):
+        future = self._reset_future
+        if self._reset_pending_step != expected_step or future is None:
+            return False
+        if not future.done():
+            if now - self._reset_sent_at <= 5.0:
+                return False
+            future.cancel()
+            self.get_logger().error(
+                f"robot reset step {expected_step} response timed out; retrying"
+            )
+        else:
+            try:
+                response = future.result()
+                if response is not None and response.is_success:
+                    self._reset_future = None
+                    self._reset_pending_step = 0
+                    self._reset_retry_after_at = 0.0
+                    return True
+            except Exception as exc:
+                self.get_logger().error(
+                    f"robot reset step {expected_step} failed: {exc}"
+                )
+            else:
+                self.get_logger().error(
+                    f"robot reset step {expected_step} was rejected; retrying"
+                )
+        self._reset_future = None
+        self._reset_pending_step = 0
+        self._reset_retry_after_at = now + 1.0
+        return False
+
+    def sim_robot_reset(self):
         req = bxiSrv.SimulationReset.Request()
         req.header.frame_id = robot_name
 
@@ -352,72 +599,202 @@ class BxiExample(Node):
         base_pose.orientation.x = 0.0
         base_pose.orientation.y = 0.0
         base_pose.orientation.z = 0.0
-        base_pose.orientation.w = 1.0        
+        base_pose.orientation.w = 1.0
 
         joint_state = JointState()
         joint_state.name = joint_name
         joint_state.position = np.zeros(dof_num, dtype=np.float32).tolist()
         joint_state.velocity = np.zeros(dof_num, dtype=np.float32).tolist()
         joint_state.effort = np.zeros(dof_num, dtype=np.float32).tolist()
-        
+
         req.base_pose = base_pose
         req.joint_state = joint_state
-    
+
         while not self.sim_rest_srv.wait_for_service(timeout_sec=1.0):
-            print('service not available, waiting again...')
-            
+            print("service not available, waiting again...")
+
         self.sim_rest_srv.call_async(req)
-    
+
     def joint_callback(self, msg):
-        joint_pos = msg.position
-        joint_vel = msg.velocity
-        joint_tor = msg.effort
+        self._update_joint_state(msg.name, msg.position, msg.velocity)
+
+    def actuator_callback(self, msg):
+        self._update_joint_state(msg.name, msg.position, msg.velocity)
+
+    def _update_joint_state(self, names, position, velocity):
+        with self.lock_in:
+            try:
+                latest = self._joint_source.update(
+                    names,
+                    position,
+                    velocity,
+                    timestamp_ns=self.get_clock().now().nanoseconds,
+                )
+            except (TypeError, ValueError) as exc:
+                if not self._bad_joint_state_warned:
+                    self.get_logger().error(f"invalid named joint state: {exc}")
+                    self._bad_joint_state_warned = True
+                return
+
+            if not self._joint_received:
+                self.get_logger().info(
+                    "ELF3 state layout initialized from message names: "
+                    f"{latest.layout.dof_num} joints"
+                )
+            self._joint_received = True
+            self._bad_joint_state_warned = False
 
     def joy_callback(self, msg):
-        dance_flag = msg.btn_9              # X 暂停或继续跳舞
-
-        if dance_flag != self.dance_flag_prev:
-            self.dance_mode = not self.dance_mode
-            print("Dance mode:", self.dance_mode)
+        events = self.runtime.extract_remote_events(msg, sync_only=self.step < 2)
+        with self.lock_in:
+            self.raw_cmd_vel[:] = (
+                msg.vel_des.x,
+                msg.vel_des.y,
+                msg.yawdot_des,
+            )
+            self.pending_remote_events.extend(events)
 
         if self.step < 2:
-            self.dance_flag_prev = dance_flag
+            return
 
-        self.dance_flag_prev = dance_flag
-        return
-        
+    def motor_override_callback(self, msg):
+        """Validate and atomically replace the final named-joint override."""
+        names = tuple(msg.actuators_name)
+        if not names:
+            if msg.pos or msg.kp or msg.kd or msg.vel or msg.torque:
+                self._warn_motor_override(
+                    "empty actuators_name disables override only when all command "
+                    "arrays are also empty"
+                )
+                return
+            self._motor_override.clear()
+            if self._motor_override_last_names:
+                self.get_logger().info("motor override release requested")
+            self._motor_override_last_names = ()
+            self._motor_override_last_error = ""
+            return
+
+        with self.lock_in:
+            if not self._joint_received:
+                if not self._motor_override_waiting_for_joints_warned:
+                    self.get_logger().warning(
+                        "motor override ignored before the robot joint layout "
+                        "is initialized"
+                    )
+                    self._motor_override_waiting_for_joints_warned = True
+                return
+            robot_layout = self._joint_source.view.layout
+
+        try:
+            submitted_names = self._motor_override.submit(
+                robot_layout,
+                names,
+                msg.pos,
+                msg.kp,
+                msg.kd,
+                vel=msg.vel if msg.vel else None,
+                torque=msg.torque if msg.torque else None,
+                received_at=time.monotonic(),
+            )
+        except (TypeError, ValueError) as exc:
+            self._warn_motor_override(str(exc))
+            return
+
+        self._motor_override_last_error = ""
+        self._motor_override_waiting_for_joints_warned = False
+        if submitted_names != self._motor_override_last_names:
+            self.get_logger().info(
+                "motor override active for joints: "
+                f"{submitted_names}"
+            )
+            self._motor_override_last_names = submitted_names
+
+    def _warn_motor_override(self, message: str):
+        if message == self._motor_override_last_error:
+            return
+        self._motor_override_last_error = message
+        self.get_logger().warning(f"invalid motor override: {message}")
+
     def imu_callback(self, msg):
         quat = msg.orientation
         avel = msg.angular_velocity
-        acc = msg.linear_acceleration
+        acceleration = msg.linear_acceleration
+        quaternion_norm = math.sqrt(
+            quat.w * quat.w + quat.x * quat.x + quat.y * quat.y + quat.z * quat.z
+        )
+        quaternion_valid = all(
+            math.isfinite(value) for value in (quat.w, quat.x, quat.y, quat.z)
+        ) and 0.9 <= quaternion_norm <= 1.1
+        vectors_valid = all(
+            math.isfinite(value)
+            for value in (
+                avel.x,
+                avel.y,
+                avel.z,
+                acceleration.x,
+                acceleration.y,
+                acceleration.z,
+            )
+        )
+        if not quaternion_valid or not vectors_valid:
+            now = time.monotonic()
+            with self.lock_in:
+                self._imu_invalid_frame_count += 1
+                invalid_count = self._imu_invalid_frame_count
+                should_log = now >= self._next_imu_invalid_warning
+                if should_log:
+                    self._next_imu_invalid_warning = now + 5.0
+            if should_log:
+                self.get_logger().warning(
+                    "dropping invalid IMU frame: "
+                    f"quaternion_norm={quaternion_norm:.6f}, "
+                    f"count={invalid_count}"
+                )
+            return
 
-        quat_tmp1 = np.array([quat.x, quat.y, quat.z, quat.w]).astype(np.double)
+        with self.lock_in:
+            self.quat_xyzw[:] = quat.x, quat.y, quat.z, quat.w
+            self.quat_wxyz[:] = quat.w, quat.x, quat.y, quat.z
+            self.omega[:] = avel.x, avel.y, avel.z
+            self.linear_acceleration[:] = acceleration.x, acceleration.y, acceleration.z
+            self._imu_received = True
+            self._imu_last_received_at = time.monotonic()
+            if not self._imu_first_received_logged:
+                self._imu_first_received_logged = True
+                self.get_logger().info(
+                    f"received first IMU frame on {self.topic_prefix}imu_data"
+                )
 
-    def touch_callback(self, msg):
-        foot_force = msg.value
-        
-    def odom_callback(self, msg): # 全局里程计（上帝视角，仅限仿真使用）
-        base_pose = msg.pose
-        base_twist = msg.twist
+    def touch_callback(self, _msg):
+        pass
+
+    def odom_callback(self, _msg):  # 全局里程计（上帝视角，仅限仿真使用）
+        pass
+
 
 def main(args=None):
-   
     time.sleep(5)
-    
+
     rclpy.init(args=args)
-    node = BxiExample()
-    
+    node = BxiExample(cpu_affinity_plan=_CPU_AFFINITY_PLAN)
+
     executor = MultiThreadedExecutor(num_threads=3)
-    executor.add_node(node)
-    
     try:
+        executor.add_node(node)
+        node.runtime.attach_executor(executor)
+        node.runtime.start()
         executor.spin()
     finally:
-        executor.shutdown()
-        node.destroy_node()
-        
-    rclpy.shutdown()
-        
-if __name__ == '__main__':
+        try:
+            node.destroy_node()
+        finally:
+            executor.shutdown()
+
+    # rclpy's signal handler may already have shut down the context before
+    # executor.spin() returns. A second shutdown raises RuntimeError.
+    if rclpy.ok():
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
     main()
-    

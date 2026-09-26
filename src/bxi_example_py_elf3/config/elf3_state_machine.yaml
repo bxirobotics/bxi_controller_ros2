@@ -1,0 +1,85 @@
+# 系统级配置。状态、事件、速度配置和状态图由各 Mod 的 mod.yaml 提供。
+initial_state: com.bxi.basic_actions/zero_torque
+
+# The IMU protection state is entered by the controller when runtime IMU data
+# becomes stale. It intentionally has no outgoing routes while recovery is
+# disabled.
+
+# 可追加客户 Mod 根目录；内置 Mods 总是从安装包的 mods/ 自动发现。
+mod_paths:
+  - /opt/bxi/mods
+
+# 统一日志身份与子进程输出保护。levels 按最长 scope 前缀匹配。
+logging:
+  default_level: info
+  levels: {}
+  subprocess:
+    max_line_bytes: 16384
+    max_lines_per_sec: 200
+
+# 控制运行时。所有平台适配器共用同一套绝对时间调度和维护策略。
+control_runtime:
+  period_sec: 0.02
+  compute_budget_sec: 0.005
+  deadline_tolerance_sec: 0.001
+
+  maintenance_hz: 5.0
+  maintenance_guard_sec: 0.005
+  statistics_interval_sec: 60.0
+  deadline_warning_interval_sec: 1.0
+
+  # 部署相关优化默认关闭；按目标机器能力显式开启。
+  python_switch_interval_sec: 0.001
+  # 先睡眠，距离绝对释放点最后200微秒时忙等；-1表示完全关闭忙等。
+  spin_wait_us: 200
+  cpu_affinity: control
+  realtime_priority: 50 #需要程序以root运行，或者sudo prlimit --pid "$$" --rtprio=99:99赋予当前终端权限
+
+test_control_runtime:
+  period_sec: 0.005
+  compute_budget_sec: 0.003
+  deadline_tolerance_sec: 0.001
+  maintenance_hz: 5.0
+  maintenance_guard_sec: 0.001
+  statistics_interval_sec: 60.0
+  deadline_warning_interval_sec: 1.0
+  python_switch_interval_sec: 0.001
+  spin_wait_us: 100
+  cpu_affinity: control
+  realtime_priority: 50
+
+graph:
+  validate: false
+  export:
+    dot: /tmp/elf3_state_machine.dot
+    mermaid: /tmp/elf3_state_machine.mmd
+
+default_transition: instant
+
+# 系统共享的过渡预设。Mod 也可以在自己的 mod.yaml 中新增命名空间预设。
+transition_profiles:
+  instant:
+    type: instant
+
+  soft_switch:
+    type: hold
+    duration: 0.02
+
+  first_frame_switch:
+    type: sequence
+    steps:
+      - type: hold
+        duration: 0.02
+      - type: entry_gain_ramp
+        duration: 1.0
+        kp_from: zero
+        kd_from: target
+
+  dual_running_blend:
+    type: running_blend
+    duration: 0.3
+    curve: smoothstep
+    sample_from: true
+    sample_to: true
+    advance_from: true
+    advance_to: true

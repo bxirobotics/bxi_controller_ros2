@@ -2,46 +2,69 @@ schema: 1
 id: com.bxi.suspended_tests
 name: Suspended motor tests
 version: 1.0.0
-api: "lightweight"
+api: ">=4,<5"
 enable: true
 entrypoint: plugin:create_mod
 visibility: public
-requires: []
+requires:
+  - id: com.bxi.basic_actions
+    version: ">=1,<2"
 conflicts: []
 python_exports: []
 runtime_requirements:
   python: []
   ros:
     - package: rclpy
-    - package: std_srvs
   system: []
 
 events:
-  running:
-    slot: btn_9
-    value: 1
-  vibration:
-    slot: btn_10
-    value: 1
-  whole_body_joint_test:
-    slot: btn_7
-    value: 1
+  test_mode: {slot: btn_8, value: 1}
+  running: {slot: btn_9, value: 1}
+  vibration: {slot: btn_10, value: 1}
+  whole_body_joint_test: {slot: btn_7, value: 1}
 
 states:
+  idle:
+    manifest: {label: 悬挂测试待机, priority: 910, group: Tests}
+    inference_hz: 200.0
   running:
-    manifest:
-      label: Suspended running trajectory
-      priority: 900
-      group: Tests
+    manifest: {label: 悬挂跑动轨迹, priority: 900, group: Tests}
+    inference_hz: 200.0
   vibration:
     manifest:
-      label: Centered vibration test
+      label: 扫频振动测试
       priority: 890
       group: Tests
       confirm: true
+    inference_hz: 200.0
   whole_body_joint_test:
     manifest:
-      label: Full-range joint test
+      label: 全关节行程测试
       priority: 880
       group: Tests
       confirm: true
+    inference_hz: 200.0
+    params:
+      range_speed_deg_s: 180.0
+      move_sec: 1.5
+      hold_sec: 0.2
+      collision_margin_deg: 10.0
+      mechanical_margin_deg: 2.0
+      tracking_tolerance_deg: 2.0
+      start_tolerance_deg: 5.0
+
+routes:
+  - {from: com.bxi.basic_actions/zero_torque, event: test_mode, to: idle}
+  - {from: idle, event: test_mode, to: com.bxi.basic_actions/zero_torque}
+  - {from: idle, event: running, to: running}
+  - {from: idle, event: vibration, to: vibration}
+  - {from: idle, event: whole_body_joint_test, to: whole_body_joint_test}
+  - {from: idle, event: com.bxi.basic_actions/zero_torque, to: com.bxi.basic_actions/zero_torque}
+  - {from: running, event: com.bxi.basic_actions/zero_torque, to: com.bxi.basic_actions/zero_torque}
+  - {from: vibration, event: com.bxi.basic_actions/zero_torque, to: com.bxi.basic_actions/zero_torque}
+  - {from: whole_body_joint_test, event: com.bxi.basic_actions/zero_torque, to: com.bxi.basic_actions/zero_torque}
+
+actions:
+  - {from: running, event: running, action: stop, manifest: {label: 停止悬挂跑动}}
+  - {from: vibration, event: vibration, action: stop, manifest: {label: 停止扫频振动}}
+  - {from: whole_body_joint_test, event: whole_body_joint_test, action: stop, manifest: {label: 停止全关节测试}}

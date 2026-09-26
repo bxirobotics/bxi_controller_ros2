@@ -268,6 +268,42 @@ void test_unassigned_b_button_has_no_motion_command_output()
     expect(message.btn_10 == 0);
 }
 
+void test_basic_and_test_mode_buttons_do_not_overlap()
+{
+    const RemoteConfig config = remote_controller::load_remote_config(
+        REMOTE_CONTROLLER_TEST_CONFIG_PATH);
+
+    const auto buttons_for = [&config](
+        const std::vector<std::pair<std::string, double>> &signals) {
+        InputMapper mapper(config);
+        mapper.set_signals(signals);
+        communication::msg::MotionCommands message;
+        mapper.fill_message(message);
+        return std::vector<int>{
+            message.btn_1, message.btn_2, message.btn_3, message.btn_4,
+            message.btn_5, message.btn_6, message.btn_7, message.btn_8,
+            message.btn_9, message.btn_10,
+        };
+    };
+
+    const auto only = [](const std::vector<int> &buttons, int index) {
+        for (int i = 0; i < 10; ++i) {
+            expect(buttons[i] == (i == index - 1 ? 1 : 0));
+        }
+    };
+
+    only(buttons_for({{"js.button.7", 1.0}, {"js.button.3", 1.0}}), 1);
+    only(buttons_for({{"js.button.7", 1.0}, {"js.button.0", 1.0}}), 2);
+    only(buttons_for({{"js.button.7", 1.0}, {"js.button.1", 1.0}}), 3);
+    only(buttons_for({{"js.button.7", 1.0}, {"js.button.4", 1.0}}), 4);
+    only(buttons_for({{"js.button.6", 1.0}, {"js.button.0", 1.0}}), 6);
+    only(buttons_for({{"js.button.6", 1.0}, {"js.button.7", 1.0},
+                      {"js.button.4", 1.0}}), 8);
+    only(buttons_for({{"js.button.0", 1.0}}), 7);
+    only(buttons_for({{"js.button.3", 1.0}}), 9);
+    only(buttons_for({{"js.button.4", 1.0}}), 10);
+}
+
 }  // namespace
 
 int main()
@@ -278,5 +314,6 @@ int main()
     test_debug_reports_changed_rule_selection();
     test_suspended_face_buttons_keep_existing_outputs();
     test_unassigned_b_button_has_no_motion_command_output();
+    test_basic_and_test_mode_buttons_do_not_overlap();
     return 0;
 }

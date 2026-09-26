@@ -25,10 +25,11 @@ class RobotObservation:
     quat_wxyz: FloatArray
     omega: FloatArray
     raw_cmd_vel: FloatArray
+    linear_acceleration: FloatArray | None = None
 
 
 class ControlPlatformAdapter(Protocol):
-    """Minimal platform boundary for reading joints and publishing motors."""
+    """Minimal platform boundary used by :class:`RobotControlRuntime`."""
 
     def startup_step(self, now: float) -> bool:
         ...
