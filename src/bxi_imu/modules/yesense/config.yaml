@@ -1,0 +1,28 @@
+# Yesense module configuration.
+# The _1 suffix gives this module priority 1.
+imu_module:
+  ros__parameters:
+    driver: yesense
+    port: /dev/ttyIMU_YESENSE_1
+    baudrate: 921600
+    frame_id: imu_link
+    imu_topic: /hardware/imu_data
+    euler_topic: /euler_data
+    magnetic_topic: /magnetic_data
+    temperature_topic: /temp_data
+    pressure_topic: /pressure_data
+    # robot_x=-imu_y, robot_y=imu_x, robot_z=imu_z
+    axis_mapping: "-y,x,z"
+    imu_frequency_hz: 200.0
+    # 200 Hz => 5 ms period; timeout threshold is 12.5 ms (2.5 periods).
+    imu_timeout_multiplier: 2.5
+    # Keep one CSV for each IMU process startup and retain the newest 10 files.
+    imu_record_enabled: true
+    imu_record_dir: /var/log/bxi_log/imu/data
+    imu_record_max_files: 10
+    imu_enabled: true
+    quaternion_norm_tolerance: 0.1
+    euler_enabled: false
+    magnetic_enabled: false
+    temperature_enabled: false
+    pressure_enabled: false

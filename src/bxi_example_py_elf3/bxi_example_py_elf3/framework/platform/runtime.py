@@ -249,6 +249,12 @@ class RobotControlRuntime:
     def period_sec(self) -> float:
         return self.scheduler.period_sec
 
+    @property
+    def current_state_name(self) -> str:
+        """Return the active state through the runtime's public interface."""
+        with self._framework_lock:
+            return self.framework.current_state_name
+
     def start(self) -> None:
         if self._closed:
             raise RuntimeError("RobotControlRuntime is closed")

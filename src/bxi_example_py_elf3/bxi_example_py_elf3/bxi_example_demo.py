@@ -18,6 +18,7 @@ from threading import Event, Lock
 import numpy as np
 
 import time
+import math
 import os
 import json
 from collections import deque
@@ -121,6 +122,15 @@ class BxiExample(Node):
         self.linear_acceleration = np.zeros(3, dtype=np.double)
         self.quat_xyzw = np.zeros(4, dtype=np.double)
         self.quat_wxyz = np.zeros(4, dtype=np.double)
+        self._imu_received = False
+        self._imu_last_received_at = None
+        self._imu_protection_latched = False
+        self._imu_first_received_logged = False
+        self._imu_invalid_frame_count = 0
+        self._next_imu_invalid_warning = 0.0
+        self._imu_startup_started_at = None
+        self._imu_startup_timeout_logged = False
+        self._next_imu_startup_warning = 0.0
         self.raw_cmd_vel = np.zeros(3, dtype=np.float32)
         self.pending_remote_events = deque()
         self._joint_source = NamedJointStateSource(dtype=np.float64)
@@ -182,6 +192,22 @@ class BxiExample(Node):
         self.declare_parameter("/state_machine_info_hz", 10.0)
         self.state_machine_info_hz = float(
             self.get_parameter("/state_machine_info_hz").value
+        )
+
+        self.imu_required = self.topic_prefix.startswith("hardware/")
+        self.declare_parameter("/imu_startup_timeout_sec", 15.0)
+        self.imu_startup_timeout_sec = float(
+            self.get_parameter("/imu_startup_timeout_sec").value
+        )
+        self.declare_parameter("/imu_runtime_timeout_sec", 0.1)
+        self.imu_runtime_timeout_sec = float(
+            self.get_parameter("/imu_runtime_timeout_sec").value
+        )
+        if self.imu_runtime_timeout_sec <= 0.0:
+            raise ValueError("/imu_runtime_timeout_sec must be positive")
+        self.declare_parameter("/imu_protection_allow_release", False)
+        self.imu_protection_allow_release = bool(
+            self.get_parameter("/imu_protection_allow_release").value
         )
 
         self.motor_override_topic = self.topic_prefix + "actuators_cmds_override"
@@ -292,6 +318,26 @@ class BxiExample(Node):
 
     def startup_step(self, now: float) -> bool:
         """Perform the ELF3-specific two-stage reset before control starts."""
+        if self.imu_required and not self._imu_received:
+            if self._imu_startup_started_at is None:
+                self._imu_startup_started_at = now
+            elif (
+                not self._imu_startup_timeout_logged
+                and now - self._imu_startup_started_at >= self.imu_startup_timeout_sec
+            ):
+                self.get_logger().error(
+                    f"IMU startup timeout: no data received on "
+                    f"{self.topic_prefix + 'imu_data'} after "
+                    f"{self.imu_startup_timeout_sec:.1f}s"
+                )
+                self._imu_startup_timeout_logged = True
+            if now >= self._next_imu_startup_warning:
+                self.get_logger().warning(
+                    f"waiting for IMU data on {self.topic_prefix + 'imu_data'} "
+                    "before control startup"
+                )
+                self._next_imu_startup_warning = now + 2.0
+            return False
         if self.step == 0:
             if self.robot_reset(1, False):
                 self.get_logger().info("robot reset step 1 requested")
@@ -318,6 +364,7 @@ class BxiExample(Node):
 
     def snapshot_control_inputs(self):
         """Copy the latest ROS inputs into one coherent framework observation."""
+        self._check_imu_runtime_safety()
         with self.lock_in:
             latest_joints = self._joint_source.view
             if self._joint_snapshot is None:
@@ -343,10 +390,72 @@ class BxiExample(Node):
             np.copyto(self._omega_snapshot, self.omega)
             np.copyto(self._linear_acceleration_snapshot, self.linear_acceleration)
             np.copyto(self._cmd_snapshot, self.raw_cmd_vel)
-            events = tuple(self.pending_remote_events)
+            events = (
+                ()
+                if self._imu_protection_latched
+                else tuple(self.pending_remote_events)
+            )
             self.pending_remote_events.clear()
         assert self._observation is not None
         return self._observation, events
+
+    def _check_imu_runtime_safety(self):
+        if not self.imu_required:
+            return
+        now = time.monotonic()
+        with self.lock_in:
+            last_received_at = self._imu_last_received_at
+            imu_received = self._imu_received
+        if not imu_received or last_received_at is None:
+            return
+        if not self._imu_protection_latched and (
+            now - last_received_at >= self.imu_runtime_timeout_sec
+        ):
+            self._imu_protection_latched = True
+            self.get_logger().error(
+                f"IMU data timeout: no frame for {now - last_received_at:.3f}s; "
+                "entering locked IMU protection state"
+            )
+        if not self._imu_protection_latched:
+            return
+        protection_state = "com.bxi.basic_actions/imu_protection"
+        if self.runtime.current_state_name != protection_state:
+            accepted = self.runtime.request_state(
+                protection_state,
+                trigger="imu_timeout",
+                force=True,
+            )
+            if not accepted:
+                self.get_logger().error(
+                    "failed to request locked IMU protection state"
+                )
+
+    def release_imu_protection(
+        self, target_state: str = "com.bxi.basic_actions/zero_torque"
+    ) -> bool:
+        """Reserved recovery interface; disabled until explicitly enabled."""
+        if not self.imu_protection_allow_release:
+            self.get_logger().warning(
+                "IMU protection release requested but the recovery interface is disabled"
+            )
+            return False
+        with self.lock_in:
+            fresh = (
+                self._imu_last_received_at is not None
+                and time.monotonic() - self._imu_last_received_at
+                < self.imu_runtime_timeout_sec
+            )
+        if not fresh:
+            self.get_logger().warning(
+                "IMU protection release rejected because IMU data is still stale"
+            )
+            return False
+        self._imu_protection_latched = False
+        return self.runtime.request_state(
+            target_state,
+            trigger="imu_recovery",
+            force=True,
+        )
 
     def publish_motor_frame(self, frame: MotorFrame):
         """Convert a framework motor frame into the ELF3 ROS command message."""
@@ -535,12 +644,51 @@ class BxiExample(Node):
         quat = msg.orientation
         avel = msg.angular_velocity
         acceleration = msg.linear_acceleration
+        quaternion_norm = math.sqrt(
+            quat.w * quat.w + quat.x * quat.x + quat.y * quat.y + quat.z * quat.z
+        )
+        quaternion_valid = all(
+            math.isfinite(value) for value in (quat.w, quat.x, quat.y, quat.z)
+        ) and 0.9 <= quaternion_norm <= 1.1
+        vectors_valid = all(
+            math.isfinite(value)
+            for value in (
+                avel.x,
+                avel.y,
+                avel.z,
+                acceleration.x,
+                acceleration.y,
+                acceleration.z,
+            )
+        )
+        if not quaternion_valid or not vectors_valid:
+            now = time.monotonic()
+            with self.lock_in:
+                self._imu_invalid_frame_count += 1
+                invalid_count = self._imu_invalid_frame_count
+                should_log = now >= self._next_imu_invalid_warning
+                if should_log:
+                    self._next_imu_invalid_warning = now + 5.0
+            if should_log:
+                self.get_logger().warning(
+                    "dropping invalid IMU frame: "
+                    f"quaternion_norm={quaternion_norm:.6f}, "
+                    f"count={invalid_count}"
+                )
+            return
 
         with self.lock_in:
             self.quat_xyzw[:] = quat.x, quat.y, quat.z, quat.w
             self.quat_wxyz[:] = quat.w, quat.x, quat.y, quat.z
             self.omega[:] = avel.x, avel.y, avel.z
             self.linear_acceleration[:] = acceleration.x, acceleration.y, acceleration.z
+            self._imu_received = True
+            self._imu_last_received_at = time.monotonic()
+            if not self._imu_first_received_logged:
+                self._imu_first_received_logged = True
+                self.get_logger().info(
+                    f"received first IMU frame on {self.topic_prefix}imu_data"
+                )
 
     def touch_callback(self, _msg):
         pass
@@ -567,7 +715,10 @@ def main(args=None):
         finally:
             executor.shutdown()
 
-    rclpy.shutdown()
+    # rclpy's signal handler may already have shut down the context before
+    # executor.spin() returns. A second shutdown raises RuntimeError.
+    if rclpy.ok():
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":
