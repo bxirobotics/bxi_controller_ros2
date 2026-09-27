@@ -32,7 +32,7 @@ states:
     speed_profile: normal
   forward_back:
     manifest: {label: 自动前后行走, priority: 995, group: Base}
-    params: {speed: 0.5, backward_speed: 0.5, segment_sec: 2.0, backward_segment_sec: 4.0}
+    params: {speed: 0.5, backward_speed: 0.5, segment_sec: 2.0, backward_segment_sec: 6.0}
   lie_down:
     manifest:
       label: 躺下
@@ -61,6 +61,7 @@ states:
       group: Base
       confirm: true
       confirm_message: 机器人将进入初始姿态，所有电机进入PD制动模式，失去支撑能力，请确保机器人处于安全状态
+    params: {startup_ramp_sec: 3.0, startup_gain_from: 0.2}
   initial_pos:
     manifest: {label: 零位模式, priority: 960, group: Base}
   recover:

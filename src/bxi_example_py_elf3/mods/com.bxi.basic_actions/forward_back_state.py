@@ -17,7 +17,7 @@ class ForwardBackState(NormalState):
 
     def __init__(
         self, name, state_id, policy, *, speed=0.5, backward_speed=0.5,
-        segment_sec=2.0, backward_segment_sec=4.0,
+        segment_sec=2.0, backward_segment_sec=6.0,
     ):
         super().__init__(name, state_id, policy)
         if not math.isfinite(speed) or not 0.0 < speed <= 1.0:

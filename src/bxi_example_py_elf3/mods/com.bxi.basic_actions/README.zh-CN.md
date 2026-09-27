@@ -1,8 +1,19 @@
+# 启动 PD 制动
+
+控制程序初始状态为 `pd_brake` 时，首次启动在收到 IMU 和关节数据后，用 3 秒
+将目标关节位置从当前实测位置平滑移动到 PD 目标位置，KP/KD 从目标值的 20%
+平滑升至 100%。之后重新进入 PD 不会重复启动渐变。参数在本目录 `mod.yaml`
+的 `pd_brake.params` 中配置：
+
+```yaml
+params: {startup_ramp_sec: 3.0, startup_gain_from: 0.2}
+```
+
 # 自动前后行走
 
 仅在 `normal` 状态按 **LB+RB+X** 可进入 `forward_back`；再次按相同组合键
 返回 `normal`。该状态复用 normal 的行走策略，以 50 Hz 更新速度指令，默认先
-以 `+0.5` 前进 2 秒，再以 `-0.5` 后退 4 秒，持续循环。侧移与转向恒为 0；
+以 `+0.5` 前进 2 秒，再以 `-0.5` 后退 6 秒，持续循环。侧移与转向恒为 0；
 遥控器摇杆和 `/cmd_vel` 不会改变这一状态的速度指令。
 
 遥控器按钮仍会进入状态机：**RB+A** 可进入零力矩，**RB+B** 可进入 PD
@@ -12,7 +23,7 @@
 速度与每段时长在本目录 `mod.yaml` 的 `forward_back.params` 中配置：
 
 ```yaml
-params: {speed: 0.5, backward_speed: 0.5, segment_sec: 2.0, backward_segment_sec: 4.0}
+params: {speed: 0.5, backward_speed: 0.5, segment_sec: 2.0, backward_segment_sec: 6.0}
 ```
 
 这里的数值是行走策略的期望速度指令，不保证实测位移或速度恰好等于该值。

@@ -69,7 +69,7 @@ def create_mod(context: ModLoadContext) -> ModDefinition:
                 speed=state.float_param("speed", 0.5),
                 backward_speed=state.float_param("backward_speed", 0.5),
                 segment_sec=state.float_param("segment_sec", 2.0),
-                backward_segment_sec=state.float_param("backward_segment_sec", 4.0),
+                backward_segment_sec=state.float_param("backward_segment_sec", 6.0),
             ),
             "lie_down": lambda state: LieDownState(
                 state.name, state.state_id, lie_down_policy
@@ -79,7 +79,11 @@ def create_mod(context: ModLoadContext) -> ModDefinition:
                 state.name, state.state_id,
                 kp=state.float_param("kp", 20.0), kd=state.float_param("kd", 1.0),
             ),
-            "pd_brake": lambda state: PdBrakeState(state.name, state.state_id, normal_policy),
+            "pd_brake": lambda state: PdBrakeState(
+                state.name, state.state_id, normal_policy,
+                startup_ramp_sec=state.float_param("startup_ramp_sec", 3.0),
+                startup_gain_from=state.float_param("startup_gain_from", 0.2),
+            ),
             "initial_pos": lambda state: InitialPosState(state.name, state.state_id),
             "recover": lambda state: RecoverState(
                 state.name, state.state_id, recover_policy, recover_face_policy
