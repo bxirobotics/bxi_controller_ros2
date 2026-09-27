@@ -1,5 +1,5 @@
 # 系统级配置。状态、事件、速度配置和状态图由各 Mod 的 mod.yaml 提供。
-initial_state: com.bxi.basic_actions/zero_torque
+initial_state: com.bxi.basic_actions/pd_brake
 
 # The IMU protection state is entered by the controller when runtime IMU data
 # becomes stale. It intentionally has no outgoing routes while recovery is

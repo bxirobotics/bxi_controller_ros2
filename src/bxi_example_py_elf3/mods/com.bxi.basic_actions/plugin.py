@@ -69,6 +69,7 @@ def create_mod(context: ModLoadContext) -> ModDefinition:
                 speed=state.float_param("speed", 0.5),
                 backward_speed=state.float_param("backward_speed", 0.5),
                 segment_sec=state.float_param("segment_sec", 2.0),
+                backward_segment_sec=state.float_param("backward_segment_sec", 4.0),
             ),
             "lie_down": lambda state: LieDownState(
                 state.name, state.state_id, lie_down_policy

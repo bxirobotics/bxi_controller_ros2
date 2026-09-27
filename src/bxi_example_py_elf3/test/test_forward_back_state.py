@@ -33,7 +33,7 @@ def states(monkeypatch):
     monkeypatch.delitem(sys.modules, forward_back_module.__name__, raising=False)
 
 
-def test_forward_back_ignores_joystick_and_alternates_every_two_seconds(states):
+def test_forward_back_ignores_joystick_and_uses_longer_backward_segment(states):
     _, ForwardBackState = states
     policy = object()
     state = ForwardBackState("forward_back", 1, policy)
@@ -45,7 +45,10 @@ def test_forward_back_ignores_joystick_and_alternates_every_two_seconds(states):
     state.on_bind(ctx)
     state.on_enter(ctx)
 
-    for elapsed, expected_x in ((0.0, 0.5), (1.9, 0.5), (2.1, -0.5), (4.1, 0.5)):
+    for elapsed, expected_x in (
+        (0.0, 0.5), (1.9, 0.5), (2.0, -0.5),
+        (4.1, -0.5), (5.9, -0.5), (6.1, 0.5),
+    ):
         state._entered_at = time.monotonic() - elapsed
         np.testing.assert_allclose(state.get_cmd_vel(ctx), [expected_x, 0.0, 0.0])
         np.testing.assert_allclose(ctx.current_cmd_vel, [expected_x, 0.0, 0.0])
@@ -73,6 +76,7 @@ def test_mode_is_reachable_only_from_normal_and_buttons_keep_safety_routes():
         "speed": 0.5,
         "backward_speed": 0.5,
         "segment_sec": 2.0,
+        "backward_segment_sec": 4.0,
     }
     entry_routes = [
         route for route in config["routes"] if route["to"] == "forward_back"
