@@ -66,7 +66,7 @@ def create_mod(context: ModLoadContext) -> ModDefinition:
             "normal": lambda state: NormalState(state.name, state.state_id, normal_policy),
             "forward_back": lambda state: ForwardBackState(
                 state.name, state.state_id, normal_policy,
-                speed=state.float_param("speed", 0.3),
+                speed=state.float_param("speed", 0.5),
                 backward_speed=state.float_param("backward_speed", 0.5),
                 segment_sec=state.float_param("segment_sec", 2.0),
             ),

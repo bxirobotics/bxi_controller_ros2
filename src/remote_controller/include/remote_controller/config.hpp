@@ -172,7 +172,7 @@ struct InputSelectionConfig {
 
 struct SystemMutexConfig {
     std::string name;
-    std::string acquire;
+    std::vector<std::string> acquire;
     std::string release;
 };
 

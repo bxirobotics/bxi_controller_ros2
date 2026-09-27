@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <map>
@@ -160,7 +161,8 @@ private:
     std::string blocking_system_mutex_locked(const std::string &action) const
     {
         for (const auto &mutex : mapper_.config().system_mutexes) {
-            if (mutex.acquire != action) {
+            if (std::find(mutex.acquire.begin(), mutex.acquire.end(), action) ==
+                mutex.acquire.end()) {
                 continue;
             }
             const auto lock_it = system_mutex_locked_.find(mutex.name);
@@ -177,7 +179,8 @@ private:
             if (mutex.release == action) {
                 system_mutex_locked_[mutex.name] = false;
             }
-            if (mutex.acquire == action) {
+            if (std::find(mutex.acquire.begin(), mutex.acquire.end(), action) !=
+                mutex.acquire.end()) {
                 system_mutex_locked_[mutex.name] = true;
             }
         }

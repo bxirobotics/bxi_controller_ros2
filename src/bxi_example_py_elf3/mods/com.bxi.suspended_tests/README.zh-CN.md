@@ -15,12 +15,19 @@
 | RB+A | 进入 zero_torque | 从任意测试状态立即进入 zero_torque |
 | RB+Y | 进入 initial_pos | 无效 |
 | LB+A | 从 PD 制动进入 recover | 无效 |
-| LB+RB+Y | 仿真可从 PD、实机仅从 zero_torque 进入测试待机 | 仅从测试待机退出到 PD |
+| LB+RB+Y | 仿真可从 PD、实机仅从 zero_torque 进入测试待机 | 仅从测试待机退出到 zero_torque |
 | X | 无效 | 悬挂跑动；再按一次停止并回中位 |
 | Y | 无效 | 10-20 Hz 扫频振动；再按一次停止并回中位 |
 | A | 无效 | 全关节行程测试；再按一次停止并回中位 |
 
-进入测试待机后，关节命令在 10 秒内平滑进入测试中位。反馈角度进入
+进入测试待机后，关节目标角度默认在 3 秒内平滑过渡到测试中位，KP 同期从
+0 增至 `JOINT_KP × 1.10`，KD 为 `JOINT_KD × 1.05`。停止 X/Y/A 后的回中位
+及待机保持中位也使用这组增益；X/Y/A 正常执行动作时仍使用原始 `JOINT_KP/KD`。
+本目录 `mod.yaml` 的 `idle.params` 可设置 `prepare_sec`（3–20 秒）、
+`prepare_kp_scale` 和 `center_kd_scale`（均限制在 0.5–1.2 倍）。反馈角度
+5° 的保护门槛及超时均未放宽。确认电机通信和悬挂安全后再逐步调整，
+不能用更高增益掩盖 `motor_timeout`。
+反馈角度进入
 5° 范围后，X/Y/A 才能启动；A 测试还会按自身配置的起始角度容差复核。
 测试停止后同样需等反馈回中位。
 关节反馈超过 0.2 秒未更新、控制周期中断超过 50 ms，或命令越过软件限位时，测试故障锁定并请求
@@ -66,7 +73,7 @@ ros2 launch bxi_example_py_elf3 example_launch_demo.launch.py start_remote_contr
 不会拉起实机进程。默认 `start_remote_controller:=false`，适用于已有安全输入源
 或只用 ROS 命令测试。不要与实机控制程序或旧独立测试 launch 同时运行。
 
-测试待机按 **LB+RB+Y** 返回 PD；测试中按 **RB+A** 或触发测试故障时
+测试待机按 **LB+RB+Y** 返回零力矩；测试中按 **RB+A** 或触发测试故障时
 进入 `zero_torque`。实机不能从 PD 直接进入测试待机。
 
 旧独立测试节点的 CSV 记录及测试启停服务没有迁入状态机；需要采集测试数据时，

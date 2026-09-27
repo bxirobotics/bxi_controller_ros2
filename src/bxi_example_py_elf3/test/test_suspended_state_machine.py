@@ -10,8 +10,14 @@ import os
 import time
 
 import numpy as np
+import pytest
 
-from bxi_example_py_elf3.control.elf3 import JOINT_NAMES, JOINT_NOMINAL_POS
+from bxi_example_py_elf3.control.elf3 import (
+    JOINT_KD,
+    JOINT_KP,
+    JOINT_NAMES,
+    JOINT_NOMINAL_POS,
+)
 from bxi_example_py_elf3.framework.joints import JointLayout
 from bxi_example_py_elf3.framework.platform.runtime import RobotControlRuntime
 from bxi_example_py_elf3.framework.runtime.control_scheduler import (
@@ -74,11 +80,58 @@ def test_idle_preparation_and_joint_feedback_fault():
     assert session.ready
     assert ctx.frame is not None
     assert np.allclose(ctx.frame.qpos, JOINT_NOMINAL_POS)
+    np.testing.assert_allclose(ctx.frame.kp, JOINT_KP * 1.1, rtol=1e-5)
+    np.testing.assert_allclose(ctx.frame.kd, JOINT_KD * 1.05, rtol=1e-5)
 
     session.last_feedback_at -= 0.3
     idle.on_update(ctx, 0.005)
     assert session.faulted
     assert ctx.requests[-1][0] == _STATES.ZERO_TORQUE
+
+
+def test_idle_preparation_time_and_kp_scale():
+    session = _STATES.TestSession()
+    idle = _bind(
+        _STATES.SuspendedIdleState(
+            "com.bxi.suspended_tests/idle", 1, session,
+            prepare_sec=8.0, prepare_kp_scale=1.1,
+        )
+    )
+    ctx = _Context()
+    ctx.robot_joints.position[0] += 0.1
+    idle.on_prepare(ctx, SimpleNamespace(name="com.bxi.basic_actions/zero_torque"))
+    idle.on_enter(ctx)
+    idle.entered_at -= 4.0
+    idle.on_update(ctx, 0.005)
+    np.testing.assert_allclose(ctx.frame.qpos[0], JOINT_NOMINAL_POS[0] + 0.05, atol=1e-4)
+    np.testing.assert_allclose(ctx.frame.kp, JOINT_KP * 1.1 * 0.5, rtol=1e-3)
+    np.testing.assert_allclose(ctx.frame.kd, JOINT_KD * 1.05, rtol=1e-5)
+    assert not session.ready
+
+    ctx.robot_joints.position[0] = JOINT_NOMINAL_POS[0]
+    idle.entered_at -= 4.1
+    idle.on_update(ctx, 0.005)
+    assert session.ready
+    np.testing.assert_allclose(ctx.frame.kp, JOINT_KP * 1.1, rtol=1e-5)
+
+    idle.on_prepare(ctx, SimpleNamespace(name="com.bxi.suspended_tests/running"))
+    idle.on_enter(ctx)
+    idle.on_update(ctx, 0.005)
+    np.testing.assert_allclose(ctx.frame.kp, JOINT_KP * 1.1, rtol=1e-5)
+    np.testing.assert_allclose(ctx.frame.kd, JOINT_KD * 1.05, rtol=1e-5)
+
+
+def test_idle_preparation_rejects_unsafe_parameters():
+    for params in (
+        {"prepare_sec": 2.0},
+        {"prepare_sec": float("nan")},
+        {"prepare_kp_scale": 1.3},
+        {"prepare_kp_scale": float("inf")},
+        {"center_kd_scale": 1.3},
+        {"center_kd_scale": float("nan")},
+    ):
+        with pytest.raises(ValueError):
+            _STATES.SuspendedIdleState("idle", 1, _STATES.TestSession(), **params)
 
 
 def test_full_range_requires_center_before_transition():
@@ -92,7 +145,7 @@ def test_full_range_requires_center_before_transition():
     ctx = _Context()
     idle.on_prepare(ctx, SimpleNamespace(name="com.bxi.basic_actions/pd_brake"))
     idle.on_enter(ctx)
-    idle.entered_at -= 10.1
+    idle.entered_at -= idle.prepare_sec + 0.1
     ctx.robot_joints.position[0] += np.deg2rad(5.5)
     idle.on_update(ctx, 0.005)
     assert not session.ready
@@ -120,9 +173,13 @@ def test_running_vibration_and_limb_states_emit_single_frame():
         state.on_update(ctx, 0.005)
         assert ctx.frame is not None
         assert np.all(np.isfinite(ctx.frame.qpos))
+        np.testing.assert_allclose(ctx.frame.kp, JOINT_KP, rtol=1e-5)
+        np.testing.assert_allclose(ctx.frame.kd, JOINT_KD, rtol=1e-5)
         assert state.on_action(ctx, "stop")
         state.stop_started_at -= 0.51
         state.on_update(ctx, 0.005)
+        np.testing.assert_allclose(ctx.frame.kp, JOINT_KP * 1.1, rtol=1e-5)
+        np.testing.assert_allclose(ctx.frame.kd, JOINT_KD * 1.05, rtol=1e-5)
         assert ctx.requests[-1][0] == _STATES.TEST_IDLE
 
 
@@ -336,10 +393,7 @@ def test_full_mod_routes_and_timer_handoff(monkeypatch):
         assert runtime.current_state_name == _STATES.TEST_IDLE
         platform.events = ["com.bxi.suspended_tests/test_mode"]
         runtime._run_control_cycle(test_owner=True)
-        assert runtime.current_state_name == "com.bxi.basic_actions/pd_brake"
-        assert runtime.request_state(
-            _STATES.ZERO_TORQUE, trigger="test_setup", force=True
-        )
+        assert runtime.current_state_name == _STATES.ZERO_TORQUE
         runtime._run_control_cycle(test_owner=False)
         platform.events = ["com.bxi.basic_actions/forward_back"]
         runtime._run_control_cycle(test_owner=False)
@@ -355,7 +409,7 @@ def test_full_mod_routes_and_timer_handoff(monkeypatch):
         runtime._run_control_cycle(test_owner=False)
         assert runtime.current_state_name == "com.bxi.basic_actions/forward_back"
         runtime._run_control_cycle(test_owner=False)
-        np.testing.assert_allclose(runtime.framework.current_cmd_vel, [0.3, 0.0, 0.0])
+        np.testing.assert_allclose(runtime.framework.current_cmd_vel, [0.5, 0.0, 0.0])
 
         platform.events = ["com.bxi.basic_actions/zero_torque"]
         runtime._run_control_cycle(test_owner=False)
@@ -384,6 +438,9 @@ def test_full_mod_routes_and_timer_handoff(monkeypatch):
         runtime._run_control_cycle(test_owner=True)
         assert len(platform.published) == 1
         idle = runtime.framework.state_machine._states[_STATES.TEST_IDLE]
+        assert idle.prepare_sec == 3.0
+        assert idle.prepare_kp_scale == 1.1
+        assert idle.center_kd_scale == 1.05
         idle.entered_at -= 10.1
         runtime._run_control_cycle(test_owner=True)
         assert idle.session.ready
@@ -405,7 +462,7 @@ def test_full_mod_routes_and_timer_handoff(monkeypatch):
         platform.events = ["com.bxi.suspended_tests/test_mode"]
         count = len(platform.published)
         runtime._run_control_cycle(test_owner=True)
-        assert runtime.current_state_name == "com.bxi.basic_actions/pd_brake"
+        assert runtime.current_state_name == _STATES.ZERO_TORQUE
         assert len(platform.published) == count
         runtime._run_control_cycle(test_owner=False)
         assert len(platform.published) == count + 1

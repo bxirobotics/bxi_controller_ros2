@@ -16,7 +16,7 @@ class ForwardBackState(NormalState):
     """Run the normal gait policy with an internal alternating velocity command."""
 
     def __init__(
-        self, name, state_id, policy, *, speed=0.3, backward_speed=0.5,
+        self, name, state_id, policy, *, speed=0.5, backward_speed=0.5,
         segment_sec=2.0,
     ):
         super().__init__(name, state_id, policy)

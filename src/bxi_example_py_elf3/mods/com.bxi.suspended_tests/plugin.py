@@ -15,7 +15,12 @@ def create_mod(context: ModLoadContext) -> ModDefinition:
     session = TestSession()
     return ModDefinition(
         state_factories={
-            "idle": lambda state: SuspendedIdleState(state.name, state.state_id, session),
+            "idle": lambda state: SuspendedIdleState(
+                state.name, state.state_id, session,
+                prepare_sec=state.float_param("prepare_sec", 3.0),
+                prepare_kp_scale=state.float_param("prepare_kp_scale", 1.1),
+                center_kd_scale=state.float_param("center_kd_scale", 1.05),
+            ),
             "running": lambda state: SuspendedRunningState(
                 state.name, state.state_id, session
             ),

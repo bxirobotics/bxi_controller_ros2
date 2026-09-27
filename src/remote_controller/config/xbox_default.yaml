@@ -21,6 +21,7 @@ sources:
       gamepad.rb: {from: js.button.7}
       gamepad.stop: {from: js.button.11}
       gamepad.start: {from: js.button.14}
+      gamepad.start_extra: {from: js.button.13}
       gamepad.a: {from: js.button.0}
       gamepad.b: {from: js.button.1}
       gamepad.x: {from: js.button.3}
@@ -79,6 +80,7 @@ controls:
 
   system.stop_event: {type: bool, inputs: [{source: gamepad.stop}]}
   system.start_event: {type: bool, inputs: [{source: gamepad.start}]}
+  system.start_hardware_event: {type: bool, inputs: [{source: gamepad.start_extra}]}
   button.a_event: {type: bool, inputs: [{source: gamepad.a}]}
   button.b_event: {type: bool, inputs: [{source: gamepad.b}]}
   button.x_event: {type: bool, inputs: [{source: gamepad.x}]}
@@ -109,6 +111,8 @@ outputs:
       when: [system.stop_event]
     - output: system.start
       when: [system.start_event]
+    - output: system.start_hardware
+      when: [system.start_hardware_event]
 
   level:
     # Both shoulders + Y switches between zero torque and suspended tests.
@@ -144,6 +148,10 @@ system:
     - "ros2 launch bxi_example_py_elf3 example_demo_hw.launch.py enable_imu:=false > /var/log/bxi_log/$(date +%Y-%m-%d_%H-%M-%S)_elf.log 2>&1 &"
     - "bash -c 'imu_log=/var/log/bxi_log/imu/imu_$(date +%Y-%m-%d_%H-%M-%S).log; exec \"$(ros2 pkg prefix remote_controller)/share/remote_controller/scripts/start_imu_if_owned.sh\" \"$imu_log\"' > /var/log/bxi_log/imu/guard_$(date +%Y-%m-%d_%H-%M-%S).log 2>&1 &"
     - "ros2 launch bxi_example_bms bms.launch.py > /var/log/bxi_log/bms_$(date +%Y-%m-%d_%H-%M-%S)_bms.log 2>&1 &"
+  start_hardware:
+    - "mkdir -p /var/log/bxi_log/imu"
+    - "bash -c 'stamp=$(date +%Y-%m-%d_%H-%M-%S); log=/var/log/bxi_log/${stamp}_elf.log; ln -s \"$log\" /var/log/bxi_log/imu/imu_${stamp}.log; exec ros2 launch bxi_example_py_elf3 example_demo_hw.launch.py enable_imu:=true > \"$log\" 2>&1' &"
+    - "ros2 launch bxi_example_bms bms.launch.py > /var/log/bxi_log/bms_$(date +%Y-%m-%d_%H-%M-%S)_bms.log 2>&1 &"
   stop:
     - "pkill -SIGINT -f '[r]os2 launch bxi_example_py_elf3 example_demo_hw[.]launch[.]py|[h]ardware_elf3|[b]xi_example_py_elf3_demo|[/]start_imu_if_owned[.]sh|[/]imu_publisher_guard|[r]os2 launch bxi_imu imu[.]launch[.]py|[/]imu_node' || true"
     - "pkill -SIGINT -f '[r]os2 launch bxi_example_bms bms[.]launch[.]py|[/]bxi_bms|[/]bxi_example_bms' || true"
@@ -152,9 +160,10 @@ system:
 
 system_mutexes:
   robot_process:
-    acquire: start
+    acquire: [start, start_hardware]
     release: stop
 
 system_reset_motion_after:
   - start
+  - start_hardware
   - stop

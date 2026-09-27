@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <string>
@@ -322,6 +323,45 @@ void test_lie_down_keeps_original_rt_y_shortcut()
     expect(message.btn_10 != 8);
 }
 
+void test_start_buttons_select_distinct_imu_sources()
+{
+    const RemoteConfig config = remote_controller::load_remote_config(
+        REMOTE_CONTROLLER_TEST_CONFIG_PATH);
+    InputMapper mapper(config);
+    expect(mapper.set_signal("js.button.14", 1.0) ==
+        std::vector<std::string>{"system.start"});
+    expect(mapper.set_signal("js.button.14", 0.0).empty());
+    expect(mapper.set_signal("js.button.13", 1.0) ==
+        std::vector<std::string>{"system.start_hardware"});
+
+    const auto original = config.system_commands.find("start");
+    const auto hardware = config.system_commands.find("start_hardware");
+    expect(original != config.system_commands.end());
+    expect(hardware != config.system_commands.end());
+    expect(std::any_of(original->second.begin(), original->second.end(),
+        [](const std::string &command) {
+            return command.find("example_demo_hw.launch.py enable_imu:=false") !=
+                std::string::npos;
+        }));
+    expect(std::any_of(original->second.begin(), original->second.end(),
+        [](const std::string &command) {
+            return command.find("start_imu_if_owned.sh") != std::string::npos;
+        }));
+    expect(std::any_of(hardware->second.begin(), hardware->second.end(),
+        [](const std::string &command) {
+            return command.find("example_demo_hw.launch.py enable_imu:=true") !=
+                std::string::npos;
+        }));
+    expect(std::none_of(hardware->second.begin(), hardware->second.end(),
+        [](const std::string &command) {
+            return command.find("start_imu_if_owned.sh") != std::string::npos;
+        }));
+    expect(config.system_mutexes.size() == 1);
+    expect(config.system_mutexes.front().acquire ==
+        (std::vector<std::string>{"start", "start_hardware"}));
+    expect(config.system_mutexes.front().release == "stop");
+}
+
 }  // namespace
 
 int main()
@@ -334,5 +374,6 @@ int main()
     test_unassigned_b_button_has_no_motion_command_output();
     test_basic_and_test_mode_buttons_do_not_overlap();
     test_lie_down_keeps_original_rt_y_shortcut();
+    test_start_buttons_select_distinct_imu_sources();
     return 0;
 }

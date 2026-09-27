@@ -47,6 +47,8 @@ class TestSession:
     def __init__(self):
         self.ready = False
         self.faulted = False
+        self.center_kp_scale = 1.1
+        self.center_kd_scale = 1.05
         self.last_feedback_stamp = None
         self.last_feedback_at = 0.0
         self.last_control_at = 0.0
@@ -87,7 +89,7 @@ class SuspendedState(RobotControlState):
         self.logger.error("suspended test fault: %s; switching to zero torque" % reason)
         ctx.request_state(ZERO_TORQUE, trigger="test_safety_fault", force=True)
 
-    def _command(self, ctx, position, kp=JOINT_KP):
+    def _command(self, ctx, position, kp=JOINT_KP, kd=JOINT_KD):
         position = np.asarray(position, dtype=np.float64)
         if (
             position.shape != JOINT_NOMINAL_POS.shape
@@ -99,7 +101,7 @@ class SuspendedState(RobotControlState):
             return
         self.last_command[:] = position
         self._apply_frame(
-            ctx, self._motor_frame(ctx, position, kp, JOINT_KD, layout=TEST_LAYOUT)
+            ctx, self._motor_frame(ctx, position, kp, kd, layout=TEST_LAYOUT)
         )
 
     def on_action(self, ctx, action_name):
@@ -114,7 +116,12 @@ class SuspendedState(RobotControlState):
     def _update_stop(self, ctx, center):
         elapsed = time.monotonic() - self.stop_started_at
         progress = minimum_jerk_progress(elapsed / RETURN_SEC)
-        self._command(ctx, self.stop_from + progress * (center - self.stop_from))
+        self._command(
+            ctx,
+            self.stop_from + progress * (center - self.stop_from),
+            JOINT_KP * self.session.center_kp_scale,
+            JOINT_KD * self.session.center_kd_scale,
+        )
         if elapsed >= RETURN_SEC:
             ctx.request_state(TEST_IDLE, trigger="test_stopped", force=True)
 
@@ -134,8 +141,22 @@ class SuspendedState(RobotControlState):
 
 
 class SuspendedIdleState(SuspendedState):
-    def __init__(self, name, state_id, session):
+    def __init__(
+        self, name, state_id, session, *, prepare_sec=3.0,
+        prepare_kp_scale=1.1, center_kd_scale=1.05,
+    ):
         super().__init__(name, state_id, session)
+        if not math.isfinite(prepare_sec) or not 3.0 <= prepare_sec <= 20.0:
+            raise ValueError("test idle prepare_sec must be in [3, 20]")
+        if not math.isfinite(prepare_kp_scale) or not 0.5 <= prepare_kp_scale <= 1.2:
+            raise ValueError("test idle prepare_kp_scale must be in [0.5, 1.2]")
+        if not math.isfinite(center_kd_scale) or not 0.5 <= center_kd_scale <= 1.2:
+            raise ValueError("test idle center_kd_scale must be in [0.5, 1.2]")
+        self.prepare_sec = float(prepare_sec)
+        self.prepare_kp_scale = float(prepare_kp_scale)
+        self.center_kd_scale = float(center_kd_scale)
+        session.center_kp_scale = self.prepare_kp_scale
+        session.center_kd_scale = self.center_kd_scale
         self.from_test = False
         self.start = JOINT_NOMINAL_POS.copy()
         self.entered_at = 0.0
@@ -162,7 +183,9 @@ class SuspendedIdleState(SuspendedState):
         if measured is not None:
             self.start[:] = measured
             self.logger.warning(
-                "suspended test preparation started; hold the robot suspended"
+                "suspended test preparation started: %.1fs, kp_scale=%.2f, kd_scale=%.2f; "
+                "hold the robot suspended"
+                % (self.prepare_sec, self.prepare_kp_scale, self.center_kd_scale)
             )
 
     def on_update(self, ctx, dt):
@@ -170,7 +193,12 @@ class SuspendedIdleState(SuspendedState):
         if measured is None:
             return
         if self.from_test:
-            self._command(ctx, JOINT_NOMINAL_POS)
+            self._command(
+                ctx,
+                JOINT_NOMINAL_POS,
+                JOINT_KP * self.session.center_kp_scale,
+                JOINT_KD * self.session.center_kd_scale,
+            )
             if np.max(np.abs(measured - JOINT_NOMINAL_POS)) <= IDLE_CENTER_TOLERANCE_RAD:
                 self.session.ready = True
             elif time.monotonic() - self.entered_at > 5.0:
@@ -183,14 +211,19 @@ class SuspendedIdleState(SuspendedState):
                 )
             return
         elapsed = time.monotonic() - self.entered_at
-        progress = minimum_jerk_progress(elapsed / 10.0)
+        progress = minimum_jerk_progress(elapsed / self.prepare_sec)
         position = self.start + progress * (JOINT_NOMINAL_POS - self.start)
-        self._command(ctx, position, JOINT_KP * min(elapsed / 10.0, 1.0))
-        if elapsed >= 10.0 and not self.session.ready:
+        self._command(
+            ctx,
+            position,
+            JOINT_KP * self.prepare_kp_scale * min(elapsed / self.prepare_sec, 1.0),
+            JOINT_KD * self.center_kd_scale,
+        )
+        if elapsed >= self.prepare_sec and not self.session.ready:
             if np.max(np.abs(measured - JOINT_NOMINAL_POS)) <= IDLE_CENTER_TOLERANCE_RAD:
                 self.session.ready = True
                 self.logger.info("suspended test preparation complete; X/Y/A ready")
-            elif elapsed >= 15.0:
+            elif elapsed >= self.prepare_sec + 5.0:
                 errors = np.abs(measured - JOINT_NOMINAL_POS)
                 index = int(np.argmax(errors))
                 self._fault(

@@ -32,7 +32,7 @@ states:
     speed_profile: normal
   forward_back:
     manifest: {label: 自动前后行走, priority: 995, group: Base}
-    params: {speed: 0.3, backward_speed: 0.5, segment_sec: 2.0}
+    params: {speed: 0.5, backward_speed: 0.5, segment_sec: 2.0}
   lie_down:
     manifest:
       label: 躺下
