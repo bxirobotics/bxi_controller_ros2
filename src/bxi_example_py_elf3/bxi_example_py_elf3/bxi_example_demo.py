@@ -377,12 +377,9 @@ class BxiExample(Node):
             else:
                 return False
             self.step = 2
-            if self.topic_prefix.find("simulation") != -1:
+            if "simulation" in self.topic_prefix:
                 self.runtime.request_state(
                     "com.bxi.basic_actions/pd_brake", trigger="AutoPdbreak"
-                )
-                self.runtime.request_state(
-                    "com.bxi.basic_actions/normal", trigger="AutoRelease"
                 )
             return False
         with self.lock_in:

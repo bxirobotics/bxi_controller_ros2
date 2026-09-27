@@ -15,13 +15,19 @@ if TYPE_CHECKING:
 class ForwardBackState(NormalState):
     """Run the normal gait policy with an internal alternating velocity command."""
 
-    def __init__(self, name, state_id, policy, *, speed=0.2, segment_sec=2.0):
+    def __init__(
+        self, name, state_id, policy, *, speed=0.3, backward_speed=0.5,
+        segment_sec=2.0,
+    ):
         super().__init__(name, state_id, policy)
         if not math.isfinite(speed) or not 0.0 < speed <= 1.0:
             raise ValueError("forward_back speed must be in (0, 1]")
+        if not math.isfinite(backward_speed) or not 0.0 < backward_speed <= 1.0:
+            raise ValueError("forward_back backward_speed must be in (0, 1]")
         if not math.isfinite(segment_sec) or segment_sec <= 0.0:
             raise ValueError("forward_back segment_sec must be positive")
         self.speed = float(speed)
+        self.backward_speed = float(backward_speed)
         self.segment_sec = float(segment_sec)
         self._entered_at: float | None = None
 
@@ -32,7 +38,8 @@ class ForwardBackState(NormalState):
         super().on_enter(ctx)
         self._entered_at = time.monotonic()
         self.logger.info(
-            f"forward/back motion started: speed=+/-{self.speed:.3f}, "
+            f"forward/back motion started: forward=+{self.speed:.3f}, "
+            f"backward=-{self.backward_speed:.3f}, "
             f"segment={self.segment_sec:.3f}s"
         )
 
@@ -40,8 +47,8 @@ class ForwardBackState(NormalState):
         elapsed = 0.0 if self._entered_at is None else max(
             0.0, time.monotonic() - self._entered_at
         )
-        direction = 1.0 if int(elapsed / self.segment_sec) % 2 == 0 else -1.0
-        self._cmd_vel_buffer[:] = (direction * self.speed, 0.0, 0.0)
+        speed = self.speed if int(elapsed / self.segment_sec) % 2 == 0 else -self.backward_speed
+        self._cmd_vel_buffer[:] = (speed, 0.0, 0.0)
         return self._publish_cmd_vel(ctx, self._cmd_vel_buffer)
 
     def on_action(self, ctx: RobotControlContext, action_name: str) -> bool:

@@ -35,10 +35,12 @@ from bxi_example_py_elf3.framework.mod_api import RobotControlState
 TEST_LAYOUT = JointLayout(JOINT_NAMES, label="ELF3 suspended tests")
 TEST_IDLE = "com.bxi.suspended_tests/idle"
 ZERO_TORQUE = "com.bxi.basic_actions/zero_torque"
+PD_BRAKE = "com.bxi.basic_actions/pd_brake"
 JOINT_MARGIN_RAD = 0.02
 FEEDBACK_TIMEOUT_SEC = 0.2
 COMMAND_GAP_TIMEOUT_SEC = 0.05
 RETURN_SEC = 0.5
+IDLE_CENTER_TOLERANCE_RAD = math.radians(5.0)
 
 
 class TestSession:
@@ -139,7 +141,13 @@ class SuspendedIdleState(SuspendedState):
         self.entered_at = 0.0
 
     def is_available(self, ctx):
-        return not self.session.faulted
+        if self.session.faulted:
+            return False
+        node = getattr(ctx, "ros_node", None)
+        runtime = getattr(node, "runtime", None)
+        if getattr(runtime, "current_state_name", None) == PD_BRAKE:
+            return str(getattr(node, "topic_prefix", "")).startswith("simulation/")
+        return True
 
     def on_prepare(self, ctx, from_state):
         self.from_test = from_state.name.startswith("com.bxi.suspended_tests/")
@@ -163,21 +171,33 @@ class SuspendedIdleState(SuspendedState):
             return
         if self.from_test:
             self._command(ctx, JOINT_NOMINAL_POS)
-            if np.max(np.abs(measured - JOINT_NOMINAL_POS)) <= 0.1:
+            if np.max(np.abs(measured - JOINT_NOMINAL_POS)) <= IDLE_CENTER_TOLERANCE_RAD:
                 self.session.ready = True
             elif time.monotonic() - self.entered_at > 5.0:
-                self._fault(ctx, "robot did not settle after the test stopped")
+                errors = np.abs(measured - JOINT_NOMINAL_POS)
+                index = int(np.argmax(errors))
+                self._fault(
+                    ctx,
+                    "robot did not settle after the test stopped: %s error=%.2f deg"
+                    % (JOINT_NAMES[index], math.degrees(errors[index])),
+                )
             return
         elapsed = time.monotonic() - self.entered_at
         progress = minimum_jerk_progress(elapsed / 10.0)
         position = self.start + progress * (JOINT_NOMINAL_POS - self.start)
         self._command(ctx, position, JOINT_KP * min(elapsed / 10.0, 1.0))
         if elapsed >= 10.0 and not self.session.ready:
-            if np.max(np.abs(measured - JOINT_NOMINAL_POS)) <= 0.1:
+            if np.max(np.abs(measured - JOINT_NOMINAL_POS)) <= IDLE_CENTER_TOLERANCE_RAD:
                 self.session.ready = True
                 self.logger.info("suspended test preparation complete; X/Y/A ready")
             elif elapsed >= 15.0:
-                self._fault(ctx, "robot did not settle at the test center")
+                errors = np.abs(measured - JOINT_NOMINAL_POS)
+                index = int(np.argmax(errors))
+                self._fault(
+                    ctx,
+                    "robot did not settle at the test center: %s error=%.2f deg"
+                    % (JOINT_NAMES[index], math.degrees(errors[index])),
+                )
 
 
 class SuspendedRunningState(SuspendedState):
@@ -350,6 +370,31 @@ class SuspendedLimbTestState(SuspendedState):
         self.segment_index = 0
         self.segment_started_at = 0.0
         self.holding = False
+        self.next_start_warning_at = 0.0
+
+    def _start_pose_error(self, ctx):
+        measured = self.session.measured(ctx)
+        errors = np.abs(measured - JOINT_NOMINAL_POS)
+        index = int(np.argmax(errors))
+        return JOINT_NAMES[index], float(errors[index])
+
+    def is_available(self, ctx):
+        if not super().is_available(ctx):
+            return False
+        try:
+            joint, error = self._start_pose_error(ctx)
+        except (KeyError, ValueError):
+            return False
+        if error <= self.start_tolerance_rad:
+            return True
+        now = time.monotonic()
+        if now >= self.next_start_warning_at:
+            self.logger.warning(
+                "full-range test waiting for center: %s error=%.2f deg, limit=%.2f deg"
+                % (joint, math.degrees(error), math.degrees(self.start_tolerance_rad))
+            )
+            self.next_start_warning_at = now + 2.0
+        return False
 
     def on_enter(self, ctx):
         self.stopping = False
@@ -357,8 +402,14 @@ class SuspendedLimbTestState(SuspendedState):
         measured = self._checked_feedback(ctx)
         if measured is None:
             return
-        if np.max(np.abs(measured - JOINT_NOMINAL_POS)) > self.start_tolerance_rad:
-            self._fault(ctx, "full-range test start pose is not centered")
+        errors = np.abs(measured - JOINT_NOMINAL_POS)
+        index = int(np.argmax(errors))
+        if errors[index] > self.start_tolerance_rad:
+            self._fault(
+                ctx,
+                "full-range test start pose is not centered: %s error=%.2f deg, limit=%.2f deg"
+                % (JOINT_NAMES[index], math.degrees(errors[index]), math.degrees(self.start_tolerance_rad)),
+            )
             return
         self.segment_index = 0
         self.segment_started_at = time.monotonic()

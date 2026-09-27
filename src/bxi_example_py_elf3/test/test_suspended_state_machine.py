@@ -81,6 +81,31 @@ def test_idle_preparation_and_joint_feedback_fault():
     assert ctx.requests[-1][0] == _STATES.ZERO_TORQUE
 
 
+def test_full_range_requires_center_before_transition():
+    session = _STATES.TestSession()
+    idle = _bind(_STATES.SuspendedIdleState("com.bxi.suspended_tests/idle", 1, session))
+    limb = _bind(
+        _STATES.SuspendedLimbTestState(
+            "com.bxi.suspended_tests/whole_body_joint_test", 2, session
+        )
+    )
+    ctx = _Context()
+    idle.on_prepare(ctx, SimpleNamespace(name="com.bxi.basic_actions/pd_brake"))
+    idle.on_enter(ctx)
+    idle.entered_at -= 10.1
+    ctx.robot_joints.position[0] += np.deg2rad(5.5)
+    idle.on_update(ctx, 0.005)
+    assert not session.ready
+    assert not limb.is_available(ctx)
+    assert not session.faulted
+    assert ctx.requests == []
+
+    ctx.robot_joints.position[0] = JOINT_NOMINAL_POS[0]
+    idle.on_update(ctx, 0.005)
+    assert session.ready
+    assert limb.is_available(ctx)
+
+
 def test_running_vibration_and_limb_states_emit_single_frame():
     session = _STATES.TestSession()
     session.ready = True
@@ -212,7 +237,16 @@ def test_full_mod_routes_and_timer_handoff(monkeypatch):
     node = None
     try:
         node = BxiExample(cpu_affinity_plan=_CPU_AFFINITY_PLAN)
-        node.release_suspension = False
+        node.release_suspension = True
+        node.topic_prefix = "simulation/"
+        automatic_state_requests = []
+        original_request_state = node.runtime.request_state
+
+        def record_startup_request(*args, **kwargs):
+            automatic_state_requests.append((args, kwargs))
+            return original_request_state(*args, **kwargs)
+
+        node.runtime.request_state = record_startup_request
 
         class ResetFuture:
             ready = False
@@ -246,11 +280,15 @@ def test_full_mod_routes_and_timer_handoff(monkeypatch):
         assert not node.startup_step(now + 0.2)
         assert node.step == 1
         assert not node.startup_step(now + 1.3)
-        assert reset_client.calls[1][:2] == (2, False)
+        assert reset_client.calls[1][:2] == (2, True)
         assert node.step == 1
         reset_client.calls[1][2].ready = True
         assert not node.startup_step(now + 1.4)
         assert node.step == 2
+        assert automatic_state_requests == [
+            (("com.bxi.basic_actions/pd_brake",), {"trigger": "AutoPdbreak"})
+        ]
+        node.runtime.request_state = original_request_state
 
         joints = JointStateBuffer(JointLayout(JOINT_NAMES))
         joints.update(
@@ -287,6 +325,22 @@ def test_full_mod_routes_and_timer_handoff(monkeypatch):
         runtime._platform = platform
 
         runtime._run_control_cycle(test_owner=False)
+        assert runtime.current_state_name == "com.bxi.basic_actions/pd_brake"
+        node.topic_prefix = "hardware/"
+        platform.events = ["com.bxi.suspended_tests/test_mode"]
+        runtime._run_control_cycle(test_owner=False)
+        assert runtime.current_state_name == "com.bxi.basic_actions/pd_brake"
+        node.topic_prefix = "simulation/"
+        platform.events = ["com.bxi.suspended_tests/test_mode"]
+        runtime._run_control_cycle(test_owner=False)
+        assert runtime.current_state_name == _STATES.TEST_IDLE
+        platform.events = ["com.bxi.suspended_tests/test_mode"]
+        runtime._run_control_cycle(test_owner=True)
+        assert runtime.current_state_name == "com.bxi.basic_actions/pd_brake"
+        assert runtime.request_state(
+            _STATES.ZERO_TORQUE, trigger="test_setup", force=True
+        )
+        runtime._run_control_cycle(test_owner=False)
         platform.events = ["com.bxi.basic_actions/forward_back"]
         runtime._run_control_cycle(test_owner=False)
         assert runtime.current_state_name == _STATES.ZERO_TORQUE
@@ -301,7 +355,7 @@ def test_full_mod_routes_and_timer_handoff(monkeypatch):
         runtime._run_control_cycle(test_owner=False)
         assert runtime.current_state_name == "com.bxi.basic_actions/forward_back"
         runtime._run_control_cycle(test_owner=False)
-        np.testing.assert_allclose(runtime.framework.current_cmd_vel, [0.2, 0.0, 0.0])
+        np.testing.assert_allclose(runtime.framework.current_cmd_vel, [0.3, 0.0, 0.0])
 
         platform.events = ["com.bxi.basic_actions/zero_torque"]
         runtime._run_control_cycle(test_owner=False)
@@ -351,7 +405,7 @@ def test_full_mod_routes_and_timer_handoff(monkeypatch):
         platform.events = ["com.bxi.suspended_tests/test_mode"]
         count = len(platform.published)
         runtime._run_control_cycle(test_owner=True)
-        assert runtime.current_state_name == _STATES.ZERO_TORQUE
+        assert runtime.current_state_name == "com.bxi.basic_actions/pd_brake"
         assert len(platform.published) == count
         runtime._run_control_cycle(test_owner=False)
         assert len(platform.published) == count + 1

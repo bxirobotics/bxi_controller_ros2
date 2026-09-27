@@ -306,6 +306,22 @@ void test_basic_and_test_mode_buttons_do_not_overlap()
     only(buttons_for({{"js.button.4", 1.0}}), 10);
 }
 
+void test_lie_down_keeps_original_rt_y_shortcut()
+{
+    const RemoteConfig config = remote_controller::load_remote_config(
+        REMOTE_CONTROLLER_TEST_CONFIG_PATH);
+    InputMapper mapper(config);
+    mapper.set_signals({{"js.axis.4", 1.0}, {"js.button.4", 1.0}});
+    communication::msg::MotionCommands message;
+    mapper.fill_message(message);
+    expect(message.btn_10 == 8);
+    expect(message.btn_4 == 0);
+
+    mapper.set_signal("js.button.7", 1.0);
+    mapper.fill_message(message);
+    expect(message.btn_10 != 8);
+}
+
 }  // namespace
 
 int main()
@@ -317,5 +333,6 @@ int main()
     test_suspended_face_buttons_keep_existing_outputs();
     test_unassigned_b_button_has_no_motion_command_output();
     test_basic_and_test_mode_buttons_do_not_overlap();
+    test_lie_down_keeps_original_rt_y_shortcut();
     return 0;
 }

@@ -54,8 +54,9 @@ states:
       start_tolerance_deg: 5.0
 
 routes:
+  - {from: com.bxi.basic_actions/pd_brake, event: test_mode, to: idle}
   - {from: com.bxi.basic_actions/zero_torque, event: test_mode, to: idle}
-  - {from: idle, event: test_mode, to: com.bxi.basic_actions/zero_torque}
+  - {from: idle, event: test_mode, to: com.bxi.basic_actions/pd_brake}
   - {from: idle, event: running, to: running}
   - {from: idle, event: vibration, to: vibration}
   - {from: idle, event: whole_body_joint_test, to: whole_body_joint_test}

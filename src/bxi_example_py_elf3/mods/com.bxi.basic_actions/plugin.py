@@ -12,12 +12,14 @@ from bxi_example_py_elf3.framework.mod_api import (
 from .imu_protection_state import ImuProtectionState
 from .forward_back_state import ForwardBackState
 from .initial_pos_state import InitialPosState
+from .lie_down_state import LieDownState
 from .normal_state import NormalState
 from .pd_brake_state import PdBrakeState
 from .recover_state import RecoverState
 from .zero_torque_state import ZeroTorqueState
 
 NORMAL_POLICY = ResourceKey[HumanoidGaitPolicyLiteIsaaclab]("com.bxi.basic_actions/normal_policy")
+LIE_DOWN_POLICY = ResourceKey[DanceMotionPolicyGravityIsaaclabV3]("com.bxi.basic_actions/lie_down_policy")
 RECOVER_POLICY = ResourceKey[DanceMotionPolicyGravityIsaaclabV3]("com.bxi.basic_actions/recover_policy")
 RECOVER_FACE_POLICY = ResourceKey[DanceMotionPolicyGravityIsaaclabV3]("com.bxi.basic_actions/recover_face_policy")
 
@@ -34,6 +36,14 @@ def _load_recover_policy(context: ResourceLoadContext) -> DanceMotionPolicyGravi
     )
 
 
+def _load_lie_down_policy(context: ResourceLoadContext) -> DanceMotionPolicyGravityIsaaclabV3:
+    return DanceMotionPolicyGravityIsaaclabV3(
+        str(context.asset("assets/lie_down.npz")),
+        str(context.asset("assets/lie_down.onnx")),
+        start_frame=150,
+    )
+
+
 def _load_recover_face_policy(context: ResourceLoadContext) -> DanceMotionPolicyGravityIsaaclabV3:
     return DanceMotionPolicyGravityIsaaclabV3(
         str(context.asset("assets/getup_face.npz")),
@@ -44,9 +54,11 @@ def _load_recover_face_policy(context: ResourceLoadContext) -> DanceMotionPolicy
 
 def create_mod(context: ModLoadContext) -> ModDefinition:
     context.register_resource(NORMAL_POLICY, _load_normal_policy)
+    context.register_resource(LIE_DOWN_POLICY, _load_lie_down_policy, policy="on_demand")
     context.register_resource(RECOVER_POLICY, _load_recover_policy, policy="on_demand")
     context.register_resource(RECOVER_FACE_POLICY, _load_recover_face_policy, policy="on_demand")
     normal_policy = context.resource(NORMAL_POLICY)
+    lie_down_policy = context.resource(LIE_DOWN_POLICY)
     recover_policy = context.resource(RECOVER_POLICY)
     recover_face_policy = context.resource(RECOVER_FACE_POLICY)
     return ModDefinition(
@@ -54,8 +66,12 @@ def create_mod(context: ModLoadContext) -> ModDefinition:
             "normal": lambda state: NormalState(state.name, state.state_id, normal_policy),
             "forward_back": lambda state: ForwardBackState(
                 state.name, state.state_id, normal_policy,
-                speed=state.float_param("speed", 0.2),
+                speed=state.float_param("speed", 0.3),
+                backward_speed=state.float_param("backward_speed", 0.5),
                 segment_sec=state.float_param("segment_sec", 2.0),
+            ),
+            "lie_down": lambda state: LieDownState(
+                state.name, state.state_id, lie_down_policy
             ),
             "zero_torque": lambda state: ZeroTorqueState(state.name, state.state_id),
             "imu_protection": lambda state: ImuProtectionState(

@@ -15,13 +15,14 @@
 | RB+A | 进入 zero_torque | 从任意测试状态立即进入 zero_torque |
 | RB+Y | 进入 initial_pos | 无效 |
 | LB+A | 从 PD 制动进入 recover | 无效 |
-| LB+RB+Y | 仅从 zero_torque 进入测试待机 | 仅从测试待机退出到 zero_torque |
+| LB+RB+Y | 仿真可从 PD、实机仅从 zero_torque 进入测试待机 | 仅从测试待机退出到 PD |
 | X | 无效 | 悬挂跑动；再按一次停止并回中位 |
 | Y | 无效 | 10-20 Hz 扫频振动；再按一次停止并回中位 |
 | A | 无效 | 全关节行程测试；再按一次停止并回中位 |
 
 进入测试待机后，关节命令在 10 秒内平滑进入测试中位。反馈角度进入
-0.1 rad 范围后，X/Y/A 才能启动。测试停止后同样需等反馈回中位。
+5° 范围后，X/Y/A 才能启动；A 测试还会按自身配置的起始角度容差复核。
+测试停止后同样需等反馈回中位。
 关节反馈超过 0.2 秒未更新、控制周期中断超过 50 ms，或命令越过软件限位时，测试故障锁定并请求
 `zero_torque`；需要重启控制程序才能重新进入测试模式。IMU 失联由
 `imu_protection` 接管，默认不可切换到其他状态。
@@ -47,7 +48,26 @@ ros2 topic info -v /hardware/actuators_cmds
 在 ROS 图中保留 `/hardware/imu_data` 的发布端点，因此 IMU 应以守护脚本
 的 GID 活动帧检测结果为准，不能只看 publisher 数量。不要同时启动旧的
 `example_launch_suspended_tests_hw.launch.py`，它仍是独立的关节命令发布者。
-统一硬件 launch 将 `release_suspension` 设为 `false`，保持悬挂测试设置。
+实机测试必须可靠地物理悬挂；硬件 launch 的 `release_suspension` 参数不提供
+物理悬挂能力。
+
+## 仿真
+
+普通仿真入口在复位时释放虚拟悬挂；测试状态也不会重新固定机身：
+
+```bash
+ros2 launch bxi_example_py_elf3 example_launch_demo.launch.py start_remote_controller:=true
+```
+
+仿真复位后进入基础控制域的 `pd_brake`，不会自动进入行走 `normal`。
+按 **LB+RB+Y** 进入测试待机；完成 10 秒回中位后按 X/Y/A 开始相应测试。
+测试会在自由落地的模型上运行，可能失稳或跌倒，只能用于仿真验证。
+此入口的遥控器禁止 `system.start/stop`，按 Start
+不会拉起实机进程。默认 `start_remote_controller:=false`，适用于已有安全输入源
+或只用 ROS 命令测试。不要与实机控制程序或旧独立测试 launch 同时运行。
+
+测试待机按 **LB+RB+Y** 返回 PD；测试中按 **RB+A** 或触发测试故障时
+进入 `zero_torque`。实机不能从 PD 直接进入测试待机。
 
 旧独立测试节点的 CSV 记录及测试启停服务没有迁入状态机；需要采集测试数据时，
 请单独录制 ROS 话题，不要为记录数据而同时启动旧测试节点。
