@@ -72,7 +72,6 @@ states:
   sequence_running:
     manifest: {label: 自动测试-跑步, priority: 850, group: Tests}
     inference_hz: 200.0
-    params: {motor_limit_c: 60.0, driver_limit_c: 0.0, temperature_timeout_sec: 0.5}
 
 routes:
   - {from: com.bxi.basic_actions/pd_brake, event: test_mode, to: idle}

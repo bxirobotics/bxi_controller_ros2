@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import math
 import time
+from collections import Counter
+from pathlib import Path
 
 import numpy as np
+import yaml
 from ament_index_python.packages import get_package_share_path
 
 from bxi_example_py_elf3.control.elf3 import (
@@ -16,6 +19,7 @@ from bxi_example_py_elf3.control.elf3 import (
     JOINT_POSITION_MAX,
     JOINT_POSITION_MIN,
     JOINT_VIBRATION_SIGNS,
+    ROBOT_NAME,
     SUSPENDED_RUN_NOMINAL_POS,
 )
 from bxi_example_py_elf3.control.limb_sequence import (
@@ -43,6 +47,159 @@ FEEDBACK_TIMEOUT_SEC = 0.2
 COMMAND_GAP_TIMEOUT_SEC = 0.05
 RETURN_SEC = 0.5
 IDLE_CENTER_TOLERANCE_RAD = math.radians(5.0)
+TEMPERATURE_TIMEOUT_SEC = 0.5
+DEFAULT_TORQUE_LIMIT_C = 90.0
+
+
+class MotorTemperaturePolicy:
+    def __init__(self, joint_models, models, defaulted_models=()):
+        self.joint_models = joint_models
+        self.models = models
+        self.defaulted_models = frozenset(defaulted_models)
+
+    def limits_for(self, joint):
+        model = self.joint_models.get(joint)
+        limits = self.models.get(model)
+        if limits is None:
+            return model or "unconfigured", DEFAULT_TORQUE_LIMIT_C, None, True
+        torque, shutdown = limits
+        return model, torque, shutdown, model in self.defaulted_models
+
+
+def _load_optional_mapping(path: Path, allowed_keys):
+    try:
+        with path.open(encoding="utf-8") as stream:
+            data = yaml.safe_load(stream)
+    except FileNotFoundError:
+        data = {}
+    if data is None:
+        data = {}
+    if not isinstance(data, dict) or set(data) - allowed_keys:
+        raise ValueError("%s has invalid top-level fields" % path.name)
+    return data
+
+
+def _validate_optional_range(label, value, *, nonnegative=False):
+    if value is None:
+        return
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError("%s must be [min, max] or null" % label)
+    if any(isinstance(bound, bool) or not isinstance(bound, (int, float))
+           or not math.isfinite(bound) for bound in value):
+        raise ValueError("%s bounds must be finite numbers" % label)
+    if value[0] >= value[1] or (nonnegative and value[0] < 0.0):
+        raise ValueError("%s bounds must be ordered%s" % (
+            label, " and nonnegative" if nonnegative else "",
+        ))
+
+
+def _validate_optional_torque(label, value):
+    if value is not None and (isinstance(value, bool)
+            or not isinstance(value, (int, float)) or not math.isfinite(value)
+            or value <= 0.0):
+        raise ValueError("%s must be a positive finite number or null" % label)
+
+
+def load_temperature_policy(config_dir: Path):
+    joint_config = _load_optional_mapping(
+        config_dir / "robot_joints.yaml", {"robot", "motor_model_counts", "joints"},
+    )
+    if joint_config.get("robot") not in (None, ROBOT_NAME):
+        raise ValueError("robot_joints.yaml robot must be %s" % ROBOT_NAME)
+    joints = joint_config.get("joints")
+    if joints is None:
+        joints = {}
+    if not isinstance(joints, dict):
+        raise ValueError("robot_joints.yaml joints must be a mapping")
+    joint_models = {}
+    for joint, info in joints.items():
+        if not isinstance(joint, str) or not joint.strip():
+            raise ValueError("joint names must be nonempty strings")
+        if not isinstance(info, dict):
+            raise ValueError("joint %s information must be a mapping" % joint)
+        _validate_optional_range(
+            "joint %s position_limit_rad" % joint, info.get("position_limit_rad"),
+        )
+        _validate_optional_torque(
+            "joint %s max_command_torque_nm" % joint,
+            info.get("max_command_torque_nm"),
+        )
+        model = info.get("motor_model")
+        if model is not None and (not isinstance(model, str) or not model.strip()):
+            raise ValueError("joint %s motor_model must be a nonempty string" % joint)
+        joint_models[joint] = model
+
+    expected_counts = joint_config.get("motor_model_counts")
+    if expected_counts is None:
+        expected_counts = {}
+    if not isinstance(expected_counts, dict):
+        raise ValueError("robot_joints.yaml motor_model_counts must be a mapping")
+    for model, count in expected_counts.items():
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError("motor_model_counts model names must be nonempty strings")
+        if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+            raise ValueError("motor_model_counts[%s] must be a positive integer" % model)
+    actual_counts = Counter(model for model in joint_models.values() if model is not None)
+    count_errors = [
+        "%s expected=%s actual=%d" % (
+            model,
+            expected_counts.get(model, "missing"),
+            actual_counts.get(model, 0),
+        )
+        for model in sorted(set(expected_counts) | set(actual_counts))
+        if expected_counts.get(model) != actual_counts.get(model, 0)
+    ]
+    if count_errors:
+        raise ValueError("motor model joint count mismatch: %s" % "; ".join(count_errors))
+
+    motor_config = _load_optional_mapping(
+        config_dir / "motor_models.yaml", {"models"},
+    )
+    models = motor_config.get("models")
+    if models is None:
+        models = {}
+    if not isinstance(models, dict):
+        raise ValueError("motor_models.yaml models must be a mapping")
+    validated_models = {}
+    defaulted_models = set()
+    for name, info in models.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("motor model names must be nonempty strings")
+        if not isinstance(info, dict):
+            raise ValueError("motor model %s information must be a mapping" % name)
+        _validate_optional_torque(
+            "motor model %s max_torque_nm" % name, info.get("max_torque_nm"),
+        )
+        mit_ranges = info.get("mit_ranges")
+        if mit_ranges is not None:
+            if not isinstance(mit_ranges, dict) or set(mit_ranges) - {
+                "position_rad", "velocity_rad_s", "kp", "kd", "torque_nm",
+            }:
+                raise ValueError("motor model %s mit_ranges has invalid fields" % name)
+            for field, value in mit_ranges.items():
+                _validate_optional_range(
+                    "motor model %s mit_ranges.%s" % (name, field), value,
+                    nonnegative=field in ("kp", "kd"),
+                )
+        thresholds = info.get("temperature")
+        if thresholds is None:
+            thresholds = {}
+        if not isinstance(thresholds, dict) or set(thresholds) - {"torque_limit_c", "shutdown_c"}:
+            raise ValueError("model %s temperature must contain only torque_limit_c and shutdown_c" % name)
+        torque = thresholds.get("torque_limit_c")
+        shutdown = thresholds.get("shutdown_c")
+        for label, value in (("torque_limit_c", torque), ("shutdown_c", shutdown)):
+            if value is not None and (isinstance(value, bool)
+                    or not isinstance(value, (int, float)) or not math.isfinite(value)
+                    or not 0.0 < value <= 150.0):
+                raise ValueError("model %s %s must be in (0, 150]" % (name, label))
+        effective_torque = float(torque) if torque is not None else DEFAULT_TORQUE_LIMIT_C
+        if torque is None:
+            defaulted_models.add(name)
+        if shutdown is not None and shutdown <= effective_torque:
+            raise ValueError("model %s shutdown_c must exceed torque_limit_c" % name)
+        validated_models[name] = (effective_torque, float(shutdown) if shutdown is not None else None)
+    return MotorTemperaturePolicy(dict(joint_models), validated_models, defaulted_models)
 
 
 class TestSession:
@@ -54,6 +211,8 @@ class TestSession:
         self.last_feedback_stamp = None
         self.last_feedback_at = 0.0
         self.last_control_at = 0.0
+        self.temperature_policy = None
+        self.temperature_config_error = "motor temperature configuration is missing"
 
     def measured(self, ctx):
         now = time.monotonic()
@@ -554,29 +713,50 @@ class SuspendedLimbTestState(SuspendedState):
             self.holding = True
 
 
-class SequentialLimbTestState(SuspendedLimbTestState):
+class SequentialTemperatureGuard:
+    def _check_temperature(self, ctx):
+        if self.session.temperature_policy is None:
+            reason = self.session.temperature_config_error
+        else:
+            reason = temperature_fault(
+                ctx, policy=self.session.temperature_policy,
+                timeout_sec=TEMPERATURE_TIMEOUT_SEC,
+            )
+        if reason is not None:
+            self._fault(ctx, reason)
+            return False
+        return True
+
+    def on_enter(self, ctx):
+        policy = self.session.temperature_policy
+        sample = getattr(ctx, "actuator_temperatures", None)
+        if policy is not None and sample is not None:
+            defaulted = [name for name in sample.names if policy.limits_for(name)[3]]
+            if defaulted:
+                self.logger.warning(
+                    "using default %.1f C motor limit for %d unconfigured joints: %s"
+                    % (DEFAULT_TORQUE_LIMIT_C, len(defaulted), ", ".join(defaulted))
+                )
+        if self._check_temperature(ctx):
+            super().on_enter(ctx)
+
+    def on_update(self, ctx, dt):
+        if not self.session.faulted and self._check_temperature(ctx):
+            super().on_update(ctx, dt)
+
+
+class SequentialLimbTestState(SequentialTemperatureGuard, SuspendedLimbTestState):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.return_state = SEQUENCE_VIBRATION
 
-    def on_enter(self, ctx):
-        reason = temperature_fault(
-            ctx, motor_limit_c=float("inf"), driver_limit_c=0.0,
-            timeout_sec=0.5,
-        )
-        if reason is not None:
-            self._fault(ctx, "cannot start sequence: %s" % reason)
-            return
-        super().on_enter(ctx)
-
-
-class SequentialVibrationState(SuspendedVibrationState):
+class SequentialVibrationState(SequentialTemperatureGuard, SuspendedVibrationState):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.return_state = SEQUENCE_RUNNING
 
 
-def temperature_fault(ctx, *, motor_limit_c, driver_limit_c, timeout_sec):
+def temperature_fault(ctx, *, policy, timeout_sec):
     sample = getattr(ctx, "actuator_temperatures", None)
     if sample is None:
         return "actuator temperature feedback is missing"
@@ -586,68 +766,23 @@ def temperature_fault(ctx, *, motor_limit_c, driver_limit_c, timeout_sec):
     names = sample.names
     if len(names) != len(set(names)) or len(sample.motor_c) != len(names):
         return "actuator motor temperature names/values are incomplete"
-    if driver_limit_c > 0.0 and len(sample.driver_c) != len(names):
-        return "actuator driver temperature names/values are incomplete"
     available_names = set(names)
     for name in JOINT_NAMES:
         if name not in available_names:
             return "actuator temperature is missing joint %s" % name
     for index, name in enumerate(names):
+        model, torque_limit_c, shutdown_c, _ = policy.limits_for(name)
         motor = sample.motor_c[index]
         if not math.isfinite(motor):
             return "invalid motor temperature for %s" % name
-        if motor >= motor_limit_c:
-            return "%s motor temperature %.1f C reached %.1f C limit" % (
-                name, motor, motor_limit_c,
+        if motor >= torque_limit_c:
+            shutdown_label = "%.1f C" % shutdown_c if shutdown_c is not None else "unconfigured"
+            return ("%s (%s) motor temperature %.1f C reached torque limit %.1f C "
+                    "(shutdown threshold %s)") % (
+                name, model, motor, torque_limit_c, shutdown_label,
             )
-        if driver_limit_c > 0.0:
-            driver = sample.driver_c[index]
-            if not math.isfinite(driver):
-                return "invalid driver temperature for %s" % name
-            if driver >= driver_limit_c:
-                return "%s driver temperature %.1f C reached %.1f C limit" % (
-                    name, driver, driver_limit_c,
-                )
     return None
 
 
-class SequentialRunningState(SuspendedRunningState):
-    def __init__(
-        self, name, state_id, session, *, motor_limit_c=60.0,
-        driver_limit_c=0.0, temperature_timeout_sec=0.5,
-    ):
-        super().__init__(name, state_id, session)
-        if not all(math.isfinite(value) for value in (
-            motor_limit_c, driver_limit_c, temperature_timeout_sec,
-        )):
-            raise ValueError("sequence temperature limits must be finite")
-        if not 0.0 < motor_limit_c <= 150.0:
-            raise ValueError("motor_limit_c must be in (0, 150]")
-        if not 0.0 <= driver_limit_c <= 150.0:
-            raise ValueError("driver_limit_c must be in [0, 150]")
-        if not 0.0 < temperature_timeout_sec <= 2.0:
-            raise ValueError("temperature_timeout_sec must be in (0, 2]")
-        self.motor_limit_c = motor_limit_c
-        self.driver_limit_c = driver_limit_c
-        self.temperature_timeout_sec = temperature_timeout_sec
-
-    def _check_temperature(self, ctx):
-        reason = temperature_fault(
-            ctx,
-            motor_limit_c=self.motor_limit_c,
-            driver_limit_c=self.driver_limit_c,
-            timeout_sec=self.temperature_timeout_sec,
-        )
-        if reason is not None:
-            self._fault(ctx, reason)
-            return False
-        return True
-
-    def on_enter(self, ctx):
-        super().on_enter(ctx)
-        self._check_temperature(ctx)
-
-    def on_update(self, ctx, dt):
-        if self.session.faulted or not self._check_temperature(ctx):
-            return
-        super().on_update(ctx, dt)
+class SequentialRunningState(SequentialTemperatureGuard, SuspendedRunningState):
+    pass

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import deque
+from collections import Counter, deque
 from pathlib import Path
 from threading import Event, RLock
 from types import SimpleNamespace
@@ -10,6 +10,7 @@ import importlib.util
 import math
 import os
 import time
+import xml.etree.ElementTree as ET
 
 import numpy as np
 import pytest
@@ -264,9 +265,40 @@ def _temperature_sample(*, names=JOINT_NAMES, motor=None, driver=None, age=0.0):
     )
 
 
-def test_sequence_advances_only_after_return_to_center():
+def _session_with_limits(*, extra=None):
     session = _STATES.TestSession()
+    models = {name: "standard" for name in JOINT_NAMES}
+    models.update(extra or {})
+    session.temperature_policy = _STATES.MotorTemperaturePolicy(
+        models, {"standard": (60.0, 80.0), "hotter": (70.0, 90.0)},
+    )
+    session.temperature_config_error = None
     session.ready = True
+    return session
+
+
+def _write_temperature_config(directory, joint_models, models, *, counts=None):
+    directory.mkdir(exist_ok=True)
+    if counts is None:
+        counts = dict(Counter(model for model in joint_models.values() if model is not None))
+    (directory / "robot_joints.yaml").write_text(
+        yaml.safe_dump({
+            "robot": "elf3",
+            "motor_model_counts": counts,
+            "joints": {name: {"motor_model": model} for name, model in joint_models.items()},
+        }),
+        encoding="utf-8",
+    )
+    (directory / "motor_models.yaml").write_text(
+        yaml.safe_dump({
+            "models": {name: {"temperature": limits} for name, limits in models.items()},
+        }),
+        encoding="utf-8",
+    )
+
+
+def test_sequence_advances_only_after_return_to_center():
+    session = _session_with_limits()
     ctx = _Context()
     ctx.actuator_temperatures = _temperature_sample()
     states = (
@@ -300,9 +332,9 @@ def test_sequence_stage_handoff_rejection_faults_without_old_command():
                 return False
             return super().request_state(name, trigger=trigger, force=force)
 
-    session = _STATES.TestSession()
-    session.ready = True
+    session = _session_with_limits()
     ctx = RejectingContext()
+    ctx.actuator_temperatures = _temperature_sample()
     state = _bind(_STATES.SequentialVibrationState("sequence_vibration", 11, session))
     state.on_enter(ctx)
     state.on_action(ctx, "stop")
@@ -314,8 +346,7 @@ def test_sequence_stage_handoff_rejection_faults_without_old_command():
 
 
 def test_sequence_run_stops_on_any_joint_temperature_limit():
-    session = _STATES.TestSession()
-    session.ready = True
+    session = _session_with_limits()
     ctx = _Context()
     ctx.actuator_temperatures = _temperature_sample()
     state = _bind(_STATES.SequentialRunningState("sequence_running", 12, session))
@@ -323,7 +354,7 @@ def test_sequence_run_stops_on_any_joint_temperature_limit():
     state.on_update(ctx, 0.005)
     assert ctx.frame is not None
     motor = list(ctx.actuator_temperatures.motor_c)
-    motor[-1] = state.motor_limit_c
+    motor[-1] = 60.0
     ctx.actuator_temperatures = _temperature_sample(motor=motor)
     ctx.frame = None
     state.on_update(ctx, 0.005)
@@ -342,7 +373,7 @@ def test_sequence_temperature_check_uses_names_not_message_order():
         names=reversed_names, motor=motor,
     )
     reason = _STATES.temperature_fault(
-        ctx, motor_limit_c=60.0, driver_limit_c=0.0, timeout_sec=0.5,
+        ctx, policy=_session_with_limits().temperature_policy, timeout_sec=0.5,
     )
     assert JOINT_NAMES[0] in reason
 
@@ -352,17 +383,35 @@ def test_sequence_temperature_check_includes_extra_published_joint():
     names = (*JOINT_NAMES, "head_y_joint")
     ctx.actuator_temperatures = _temperature_sample(
         names=names,
-        motor=[35.0] * len(JOINT_NAMES) + [61.0],
+        motor=[35.0] * len(JOINT_NAMES) + [89.9],
     )
     reason = _STATES.temperature_fault(
-        ctx, motor_limit_c=60.0, driver_limit_c=0.0, timeout_sec=0.5,
+        ctx, policy=_session_with_limits().temperature_policy, timeout_sec=0.5,
+    )
+    assert reason is None
+    ctx.actuator_temperatures = _temperature_sample(
+        names=names, motor=[35.0] * len(JOINT_NAMES) + [90.0],
+    )
+    reason = _STATES.temperature_fault(
+        ctx, policy=_session_with_limits().temperature_policy, timeout_sec=0.5,
     )
     assert "head_y_joint" in reason
+    assert "90.0 C" in reason
+
+    ctx.actuator_temperatures = _temperature_sample(
+        names=names, motor=[35.0] * len(JOINT_NAMES) + [61.0],
+    )
+    reason = _STATES.temperature_fault(
+        ctx,
+        policy=_session_with_limits(extra={"head_y_joint": "standard"}).temperature_policy,
+        timeout_sec=0.5,
+    )
+    assert "head_y_joint" in reason
+    assert "torque limit" in reason
 
 
 def test_sequence_rejects_missing_temperature_before_joint_motion():
-    session = _STATES.TestSession()
-    session.ready = True
+    session = _session_with_limits()
     ctx = _Context()
     state = _bind(_STATES.SequentialLimbTestState("sequence_joint", 10, session))
     state.on_enter(ctx)
@@ -371,17 +420,238 @@ def test_sequence_rejects_missing_temperature_before_joint_motion():
     assert ctx.requests[-1][0] == _STATES.ZERO_TORQUE
 
 
-@pytest.mark.parametrize("params", [
-    {"motor_limit_c": 0.0},
-    {"motor_limit_c": float("nan")},
-    {"driver_limit_c": -1.0},
-    {"temperature_timeout_sec": 0.0},
+@pytest.mark.parametrize("limits", [
+    {"torque_limit_c": 0.0, "shutdown_c": 80.0},
+    {"torque_limit_c": float("nan"), "shutdown_c": 80.0},
+    {"torque_limit_c": 80.0, "shutdown_c": 60.0},
+    {"torque_limit_c": 60.0, "shutdown_c": -1.0},
+    {"torque_limit_c": None, "shutdown_c": 80.0},
 ])
-def test_sequence_rejects_invalid_temperature_limits(params):
+def test_sequence_rejects_invalid_temperature_limits(tmp_path, limits):
+    _write_temperature_config(
+        tmp_path,
+        {name: "standard" for name in JOINT_NAMES},
+        {"standard": limits},
+    )
     with pytest.raises(ValueError):
-        _STATES.SequentialRunningState(
-            "sequence_running", 12, _STATES.TestSession(), **params,
-        )
+        _STATES.load_temperature_policy(tmp_path)
+
+
+def test_sequence_config_uses_default_for_unmapped_joint_and_model(tmp_path):
+    joint_models = {name: "standard" for name in JOINT_NAMES[:-1]}
+    models = {"standard": {"torque_limit_c": 60.0, "shutdown_c": 80.0}}
+    _write_temperature_config(tmp_path, joint_models, models)
+    policy = _STATES.load_temperature_policy(tmp_path)
+    assert policy.limits_for(JOINT_NAMES[-1]) == ("unconfigured", 90.0, None, True)
+    assert policy.limits_for(JOINT_NAMES[0]) == ("standard", 60.0, 80.0, False)
+    joint_models[JOINT_NAMES[-1]] = "unknown"
+    _write_temperature_config(tmp_path, joint_models, models)
+    policy = _STATES.load_temperature_policy(tmp_path)
+    assert policy.limits_for(JOINT_NAMES[-1]) == ("unknown", 90.0, None, True)
+
+
+def test_sequence_config_missing_model_limit_uses_90_c(tmp_path):
+    _write_temperature_config(
+        tmp_path,
+        {name: "standard" for name in JOINT_NAMES},
+        {"standard": {"shutdown_c": 100.0}},
+    )
+    policy = _STATES.load_temperature_policy(tmp_path)
+    assert policy.limits_for(JOINT_NAMES[0]) == ("standard", 90.0, 100.0, True)
+
+
+def test_sequence_rejects_wrong_config_shape(tmp_path):
+    (tmp_path / "robot_joints.yaml").write_text(
+        "robot: elf3\njoints: []\n", encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="joints must be a mapping"):
+        _STATES.load_temperature_policy(tmp_path)
+
+
+def test_sequence_rejects_motor_model_count_mismatch(tmp_path):
+    _write_temperature_config(
+        tmp_path,
+        {JOINT_NAMES[0]: "standard", JOINT_NAMES[1]: "standard"},
+        {},
+        counts={"standard": 1},
+    )
+    with pytest.raises(ValueError, match="standard expected=1 actual=2"):
+        _STATES.load_temperature_policy(tmp_path)
+
+    _write_temperature_config(
+        tmp_path,
+        {JOINT_NAMES[0]: "standard", JOINT_NAMES[1]: "standrad"},
+        {},
+        counts={"standard": 2},
+    )
+    with pytest.raises(ValueError, match="standrad expected=missing actual=1"):
+        _STATES.load_temperature_policy(tmp_path)
+
+
+@pytest.mark.parametrize("count", [True, 1.5, 0, -1])
+def test_sequence_rejects_invalid_motor_model_count(tmp_path, count):
+    _write_temperature_config(
+        tmp_path, {JOINT_NAMES[0]: "standard"}, {}, counts={"standard": count},
+    )
+    with pytest.raises(ValueError, match="must be a positive integer"):
+        _STATES.load_temperature_policy(tmp_path)
+
+
+def test_sequence_temperature_config_template_and_model_lookup(tmp_path):
+    template_dir = _STATES_PATH.parent / "config"
+    joint_template = yaml.safe_load(
+        (template_dir / "robot_joints.yaml").read_text(encoding="utf-8")
+    )
+    motor_template = yaml.safe_load(
+        (template_dir / "motor_models.yaml").read_text(encoding="utf-8")
+    )
+    assert joint_template["robot"] == "elf3"
+    assert set(JOINT_NAMES) <= set(joint_template["joints"])
+    assert {"head_y_joint", "head_z_joint"} <= set(joint_template["joints"])
+    assert joint_template["motor_model_counts"] == dict(Counter(
+        info["motor_model"] for info in joint_template["joints"].values()
+    ))
+    assert set(motor_template["models"]) == set(joint_template["motor_model_counts"])
+    for spec in motor_template["models"].values():
+        assert set(spec) == {"temperature"}
+        assert set(spec["temperature"]) == {"torque_limit_c", "shutdown_c"}
+    configured_policy = _STATES.load_temperature_policy(template_dir)
+    model = joint_template["joints"][JOINT_NAMES[0]]["motor_model"]
+    assert configured_policy.limits_for(JOINT_NAMES[0])[:3] == (
+        model, *configured_policy.models[model],
+    )
+    joint_models = {name: "standard" for name in joint_template["joints"]}
+    joint_models[JOINT_NAMES[-1]] = "hotter"
+    models = {
+        "standard": {"torque_limit_c": 60.0, "shutdown_c": 80.0},
+        "hotter": {"torque_limit_c": 70.0, "shutdown_c": 90.0},
+    }
+    _write_temperature_config(tmp_path, joint_models, models)
+    policy = _STATES.load_temperature_policy(tmp_path)
+    assert policy.joint_models[JOINT_NAMES[-1]] == "hotter"
+    assert policy.models["hotter"] == (70.0, 90.0)
+
+
+def test_joint_metadata_matches_elf3_model_ranges():
+    template_dir = _STATES_PATH.parent / "config"
+    joint_config = yaml.safe_load(
+        (template_dir / "robot_joints.yaml").read_text(encoding="utf-8")
+    )
+    model_path = _STATES_PATH.parents[2] / "data/elf3.xml"
+    model_ranges = {
+        element.attrib["name"]: [float(value) for value in element.attrib["range"].split()]
+        for element in ET.parse(model_path).iter("joint")
+        if "name" in element.attrib and "range" in element.attrib
+    }
+    assert set(model_ranges) == set(JOINT_NAMES)
+    for joint in JOINT_NAMES:
+        assert joint_config["joints"][joint]["position_limit_rad"] == model_ranges[joint]
+        assert joint_config["joints"][joint]["max_command_torque_nm"] is None
+    for joint in ("head_y_joint", "head_z_joint"):
+        assert joint_config["joints"][joint]["position_limit_rad"] is None
+
+
+@pytest.mark.parametrize("field, value, match", [
+    ("position_limit_rad", [1.0, -1.0], "bounds must be ordered"),
+    ("position_limit_rad", [float("nan"), 1.0], "finite numbers"),
+    ("max_command_torque_nm", -1.0, "positive finite"),
+])
+def test_joint_metadata_rejects_invalid_hardware_values(tmp_path, field, value, match):
+    _write_temperature_config(tmp_path, {JOINT_NAMES[0]: "standard"}, {})
+    path = tmp_path / "robot_joints.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["joints"][JOINT_NAMES[0]][field] = value
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    with pytest.raises(ValueError, match=match):
+        _STATES.load_temperature_policy(tmp_path)
+
+
+@pytest.mark.parametrize("field, value, match", [
+    ("max_torque_nm", 0.0, "positive finite"),
+    ("mit_ranges", {"torque_nm": [10.0, -10.0]}, "bounds must be ordered"),
+    ("mit_ranges", {"kp": [-1.0, 10.0]}, "nonnegative"),
+    ("mit_ranges", {"velocity_rad_s": [None, 10.0]}, "finite numbers"),
+])
+def test_motor_metadata_rejects_invalid_hardware_values(tmp_path, field, value, match):
+    _write_temperature_config(tmp_path, {JOINT_NAMES[0]: "standard"}, {"standard": {}})
+    path = tmp_path / "motor_models.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["models"]["standard"][field] = value
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    with pytest.raises(ValueError, match=match):
+        _STATES.load_temperature_policy(tmp_path)
+
+
+def test_joint_and_motor_metadata_can_be_extended(tmp_path):
+    _write_temperature_config(
+        tmp_path,
+        {JOINT_NAMES[0]: "standard"},
+        {"standard": {"torque_limit_c": 60.0, "shutdown_c": 80.0}},
+    )
+    joint_path = tmp_path / "robot_joints.yaml"
+    joint_data = yaml.safe_load(joint_path.read_text(encoding="utf-8"))
+    joint_data["joints"][JOINT_NAMES[0]]["role"] = "waist"
+    joint_path.write_text(yaml.safe_dump(joint_data), encoding="utf-8")
+    motor_path = tmp_path / "motor_models.yaml"
+    motor_data = yaml.safe_load(motor_path.read_text(encoding="utf-8"))
+    motor_data["models"]["standard"]["rated_torque_nm"] = 10.0
+    motor_path.write_text(yaml.safe_dump(motor_data), encoding="utf-8")
+    policy = _STATES.load_temperature_policy(tmp_path)
+    assert policy.limits_for(JOINT_NAMES[0]) == ("standard", 60.0, 80.0, False)
+
+
+def test_sequence_uses_model_specific_torque_limit():
+    policy = _session_with_limits(extra={JOINT_NAMES[-1]: "hotter"}).temperature_policy
+    ctx = _Context()
+    motor = [35.0] * len(JOINT_NAMES)
+    motor[-1] = 65.0
+    ctx.actuator_temperatures = _temperature_sample(motor=motor)
+    assert _STATES.temperature_fault(ctx, policy=policy, timeout_sec=0.5) is None
+    motor[-1] = 70.0
+    ctx.actuator_temperatures = _temperature_sample(motor=motor)
+    reason = _STATES.temperature_fault(ctx, policy=policy, timeout_sec=0.5)
+    assert JOINT_NAMES[-1] in reason and "hotter" in reason and "70.0 C" in reason
+
+
+@pytest.mark.parametrize("state_type", [
+    _STATES.SequentialLimbTestState, _STATES.SequentialVibrationState,
+])
+def test_sequence_early_stages_stop_at_torque_limit(state_type):
+    session = _session_with_limits()
+    ctx = _Context()
+    ctx.actuator_temperatures = _temperature_sample()
+    state = _bind(state_type("sequence", 10, session))
+    state.on_enter(ctx)
+    ctx.actuator_temperatures = _temperature_sample(motor=[60.0] + [35.0] * (len(JOINT_NAMES) - 1))
+    ctx.frame = None
+    state.on_update(ctx, 0.005)
+    assert session.faulted
+    assert ctx.frame is None
+    assert ctx.requests[-1][0] == _STATES.ZERO_TORQUE
+
+
+def test_sequence_unfilled_config_starts_and_stops_at_90_c(tmp_path):
+    _write_temperature_config(
+        tmp_path,
+        {name: "standard" for name in JOINT_NAMES},
+        {"standard": {}},
+    )
+    session = _STATES.TestSession()
+    session.temperature_policy = _STATES.load_temperature_policy(tmp_path)
+    session.ready = True
+    ctx = _Context()
+    ctx.actuator_temperatures = _temperature_sample()
+    state = _bind(_STATES.SequentialLimbTestState("sequence_joint", 10, session))
+    state.on_enter(ctx)
+    assert not session.faulted
+    assert any("default 90.0 C" in message for message in state.logger.warnings)
+    ctx.actuator_temperatures = _temperature_sample(
+        motor=[90.0] + [35.0] * (len(JOINT_NAMES) - 1)
+    )
+    state.on_update(ctx, 0.005)
+    assert session.faulted
+    assert "90.0 C" in state.logger.errors[-1]
+    assert ctx.requests[-1][0] == _STATES.ZERO_TORQUE
 
 
 def test_actuator_callback_captures_named_temperature_snapshot():
@@ -412,11 +682,10 @@ def test_actuator_callback_captures_named_temperature_snapshot():
     ("stale", "stale"),
     ("missing_joint", "missing joint"),
     ("invalid_motor", "invalid motor"),
-    ("hot_driver", "driver temperature"),
+    ("hot_motor", "torque limit"),
 ])
 def test_sequence_run_fails_closed_on_bad_temperature_feedback(case, reason):
-    session = _STATES.TestSession()
-    session.ready = True
+    session = _session_with_limits()
     ctx = _Context()
     ctx.actuator_temperatures = {
         "missing": None,
@@ -425,13 +694,11 @@ def test_sequence_run_fails_closed_on_bad_temperature_feedback(case, reason):
         "invalid_motor": _temperature_sample(
             motor=[float("nan")] + [35.0] * (len(JOINT_NAMES) - 1)
         ),
-        "hot_driver": _temperature_sample(
-            driver=[70.0] + [35.0] * (len(JOINT_NAMES) - 1)
+        "hot_motor": _temperature_sample(
+            motor=[70.0] + [35.0] * (len(JOINT_NAMES) - 1)
         ),
     }[case]
-    state = _bind(_STATES.SequentialRunningState(
-        "sequence_running", 12, session, driver_limit_c=60.0,
-    ))
+    state = _bind(_STATES.SequentialRunningState("sequence_running", 12, session))
     state.on_enter(ctx)
     assert session.faulted
     assert ctx.requests[-1][0] == _STATES.ZERO_TORQUE

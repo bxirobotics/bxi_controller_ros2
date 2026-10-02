@@ -1,5 +1,7 @@
 """Full state-machine entrypoint for suspended tests."""
 
+import yaml
+
 from bxi_example_py_elf3.framework.mod_api import ModDefinition, ModLoadContext
 
 from .control_states import (
@@ -11,12 +13,20 @@ from .control_states import (
     SequentialVibrationState,
     SequentialRunningState,
     TestSession,
+    load_temperature_policy,
 )
 from .remote_guard import TestRemoteGuard
 
 
 def create_mod(context: ModLoadContext) -> ModDefinition:
     session = TestSession()
+    try:
+        session.temperature_policy = load_temperature_policy(
+            context.mod_root / "config"
+        )
+        session.temperature_config_error = None
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        session.temperature_config_error = "motor temperature configuration invalid: %s" % exc
     remote_guard = TestRemoteGuard()
 
     def limb_test(state, state_type):
@@ -61,9 +71,6 @@ def create_mod(context: ModLoadContext) -> ModDefinition:
             ),
             "sequence_running": lambda state: SequentialRunningState(
                 state.name, state.state_id, session,
-                motor_limit_c=state.float_param("motor_limit_c", 60.0),
-                driver_limit_c=state.float_param("driver_limit_c", 0.0),
-                temperature_timeout_sec=state.float_param("temperature_timeout_sec", 0.5),
             ),
         }
     )
