@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 from .cpu_affinity import CpuAffinityPlan, CpuAffinityRole, CpuAffinitySpec
 if TYPE_CHECKING:
-    from .api import ControlPlatformAdapter, RobotObservation
+    from .api import ActuatorTemperatures, ControlPlatformAdapter, RobotObservation
     from .joint_io import (
         FixedOrderJointCommandEncoder,
         FixedOrderJointStateSource,
@@ -15,12 +15,13 @@ if TYPE_CHECKING:
 
 
 def __getattr__(name: str):
-    if name in {"ControlPlatformAdapter", "RobotObservation"}:
-        from .api import ControlPlatformAdapter, RobotObservation
+    if name in {"ActuatorTemperatures", "ControlPlatformAdapter", "RobotObservation"}:
+        from .api import ActuatorTemperatures, ControlPlatformAdapter, RobotObservation
 
         return {
             "ControlPlatformAdapter": ControlPlatformAdapter,
             "RobotObservation": RobotObservation,
+            "ActuatorTemperatures": ActuatorTemperatures,
         }[name]
     if name in {
         "FixedOrderJointCommandEncoder",
@@ -51,6 +52,7 @@ def __getattr__(name: str):
     raise AttributeError(name)
 
 __all__ = [
+    "ActuatorTemperatures",
     "ControlPlatformAdapter",
     "ControlRuntimeConfig",
     "CpuAffinityPlan",

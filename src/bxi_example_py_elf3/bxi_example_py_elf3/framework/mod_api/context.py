@@ -10,6 +10,7 @@ from bxi_example_py_elf3.framework.joints import JointLayout, JointStateView
 
 if TYPE_CHECKING:
     from bxi_example_py_elf3.framework.inference import InferenceFrame
+    from bxi_example_py_elf3.framework.platform.api import ActuatorTemperatures
     from rclpy.node import Node
 
     from .frame import MotorFrame
@@ -56,6 +57,7 @@ class RobotControlContext(Protocol):
     current_raw_cmd_vel: FloatArray
     current_cmd_vel: FloatArray
     last_motor_frame: "MotorFrame"
+    actuator_temperatures: "ActuatorTemperatures | None"
     speed_profiles: Mapping[str, object]
 
     @property

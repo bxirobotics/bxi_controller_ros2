@@ -38,6 +38,7 @@ from bxi_example_py_elf3.framework.joints import (
 )
 from bxi_example_py_elf3.framework.mod_api import MotorFrame
 from bxi_example_py_elf3.framework.platform import (
+    ActuatorTemperatures,
     NamedJointStateSource,
     RobotControlRuntime,
     RobotObservation,
@@ -140,6 +141,7 @@ class BxiExample(Node):
         self.raw_cmd_vel = np.zeros(3, dtype=np.float32)
         self.pending_remote_events = deque()
         self._joint_source = NamedJointStateSource(dtype=np.float64)
+        self._actuator_temperatures = None
         self._joint_received = False
         self._bad_joint_state_warned = False
         self._joint_snapshot: JointStateBuffer | None = None
@@ -403,6 +405,7 @@ class BxiExample(Node):
                     raw_cmd_vel=self._cmd_snapshot,
                     linear_acceleration=self._linear_acceleration_snapshot,
                 )
+            self._observation.actuator_temperatures = self._actuator_temperatures
             self._joint_snapshot.update(
                 latest_joints.position,
                 latest_joints.velocity,
@@ -616,6 +619,14 @@ class BxiExample(Node):
         self._update_joint_state(msg.name, msg.position, msg.velocity)
 
     def actuator_callback(self, msg):
+        snapshot = ActuatorTemperatures(
+            names=tuple(msg.name),
+            motor_c=tuple(msg.motor_temperature),
+            driver_c=tuple(msg.driver_temperature),
+            received_at=time.monotonic(),
+        )
+        with self.lock_in:
+            self._actuator_temperatures = snapshot
         self._update_joint_state(msg.name, msg.position, msg.velocity)
 
     def _update_joint_state(self, names, position, velocity):

@@ -7,6 +7,9 @@ from .control_states import (
     SuspendedLimbTestState,
     SuspendedRunningState,
     SuspendedVibrationState,
+    SequentialLimbTestState,
+    SequentialVibrationState,
+    SequentialRunningState,
     TestSession,
 )
 from .remote_guard import TestRemoteGuard
@@ -15,6 +18,21 @@ from .remote_guard import TestRemoteGuard
 def create_mod(context: ModLoadContext) -> ModDefinition:
     session = TestSession()
     remote_guard = TestRemoteGuard()
+
+    def limb_test(state, state_type):
+        return state_type(
+            state.name,
+            state.state_id,
+            session,
+            range_speed_deg_s=state.float_param("range_speed_deg_s", 180.0),
+            move_sec=state.float_param("move_sec", 1.5),
+            hold_sec=state.float_param("hold_sec", 0.2),
+            collision_margin_deg=state.float_param("collision_margin_deg", 10.0),
+            mechanical_margin_deg=state.float_param("mechanical_margin_deg", 2.0),
+            tracking_tolerance_deg=state.float_param("tracking_tolerance_deg", 2.0),
+            start_tolerance_deg=state.float_param("start_tolerance_deg", 5.0),
+        )
+
     return ModDefinition(
         remote_event_filter=remote_guard,
         state_observer=remote_guard.observe_state,
@@ -32,17 +50,20 @@ def create_mod(context: ModLoadContext) -> ModDefinition:
             "vibration": lambda state: SuspendedVibrationState(
                 state.name, state.state_id, session
             ),
-            "whole_body_joint_test": lambda state: SuspendedLimbTestState(
-                state.name,
-                state.state_id,
-                session,
-                range_speed_deg_s=state.float_param("range_speed_deg_s", 180.0),
-                move_sec=state.float_param("move_sec", 1.5),
-                hold_sec=state.float_param("hold_sec", 0.2),
-                collision_margin_deg=state.float_param("collision_margin_deg", 10.0),
-                mechanical_margin_deg=state.float_param("mechanical_margin_deg", 2.0),
-                tracking_tolerance_deg=state.float_param("tracking_tolerance_deg", 2.0),
-                start_tolerance_deg=state.float_param("start_tolerance_deg", 5.0),
+            "whole_body_joint_test": lambda state: limb_test(
+                state, SuspendedLimbTestState,
+            ),
+            "sequence_joint": lambda state: limb_test(
+                state, SequentialLimbTestState,
+            ),
+            "sequence_vibration": lambda state: SequentialVibrationState(
+                state.name, state.state_id, session,
+            ),
+            "sequence_running": lambda state: SequentialRunningState(
+                state.name, state.state_id, session,
+                motor_limit_c=state.float_param("motor_limit_c", 60.0),
+                driver_limit_c=state.float_param("driver_limit_c", 0.0),
+                temperature_timeout_sec=state.float_param("temperature_timeout_sec", 0.5),
             ),
         }
     )

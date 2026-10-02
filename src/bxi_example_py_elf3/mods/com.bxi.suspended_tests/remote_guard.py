@@ -9,6 +9,7 @@ _TEST_EVENTS = frozenset({
     _PREFIX + "running",
     _PREFIX + "vibration",
     _PREFIX + "whole_body_joint_test",
+    _PREFIX + "sequence",
 })
 
 

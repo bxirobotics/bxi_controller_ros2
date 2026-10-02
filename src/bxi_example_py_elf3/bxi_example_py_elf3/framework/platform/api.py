@@ -26,6 +26,15 @@ class RobotObservation:
     omega: FloatArray
     raw_cmd_vel: FloatArray
     linear_acceleration: FloatArray | None = None
+    actuator_temperatures: ActuatorTemperatures | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ActuatorTemperatures:
+    names: tuple[str, ...]
+    motor_c: tuple[float, ...]
+    driver_c: tuple[float, ...]
+    received_at: float
 
 
 class ControlPlatformAdapter(Protocol):
@@ -43,4 +52,4 @@ class ControlPlatformAdapter(Protocol):
         ...
 
 
-__all__ = ["ControlPlatformAdapter", "RobotObservation"]
+__all__ = ["ActuatorTemperatures", "ControlPlatformAdapter", "RobotObservation"]

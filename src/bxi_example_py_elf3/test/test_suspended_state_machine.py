@@ -7,6 +7,7 @@ from pathlib import Path
 from threading import Event, RLock
 from types import SimpleNamespace
 import importlib.util
+import math
 import os
 import time
 
@@ -23,6 +24,7 @@ from bxi_example_py_elf3.control.elf3 import (
     JOINT_POSITION_MIN,
 )
 from bxi_example_py_elf3.framework.joints import JointLayout
+from bxi_example_py_elf3.framework.platform.api import ActuatorTemperatures
 from bxi_example_py_elf3.framework.platform.runtime import RobotControlRuntime
 from bxi_example_py_elf3.framework.runtime.control_scheduler import (
     ControlCycleResult,
@@ -71,6 +73,7 @@ class _Context:
         )
         self.frame = None
         self.requests = []
+        self.actuator_temperatures = None
 
     def set_motor_target(self, frame):
         self.frame = frame
@@ -234,7 +237,11 @@ def test_test_mode_has_one_button_exit_and_ignores_basic_mode_buttons():
     )
     assert config["events"]["test_mode"] == {"slot": "btn_8", "value": 1}
     assert config["events"]["exit_test_mode"] == {"slot": "btn_8", "value": 2}
-    for source in ("idle", "running", "vibration", "whole_body_joint_test"):
+    assert config["events"]["sequence"] == {"slot": "btn_9", "value": 2}
+    for source in (
+        "idle", "running", "vibration", "whole_body_joint_test",
+        "sequence_joint", "sequence_vibration", "sequence_running",
+    ):
         routes = [route for route in config["routes"] if route["from"] == source]
         exits = [route for route in routes if route["to"] == _STATES.ZERO_TORQUE]
         assert exits == [{"from": source, "event": "exit_test_mode", "to": _STATES.ZERO_TORQUE}]
@@ -246,6 +253,189 @@ def test_test_mode_has_one_button_exit_and_ignores_basic_mode_buttons():
     })
     assert adapter.extract_events(SimpleNamespace(btn_8=1)) == ["test_mode"]
     assert adapter.extract_events(SimpleNamespace(btn_8=2)) == ["exit_test_mode"]
+
+
+def _temperature_sample(*, names=JOINT_NAMES, motor=None, driver=None, age=0.0):
+    return ActuatorTemperatures(
+        names=tuple(names),
+        motor_c=tuple(motor if motor is not None else [35.0] * len(names)),
+        driver_c=tuple(driver if driver is not None else [35.0] * len(names)),
+        received_at=time.monotonic() - age,
+    )
+
+
+def test_sequence_advances_only_after_return_to_center():
+    session = _STATES.TestSession()
+    session.ready = True
+    ctx = _Context()
+    ctx.actuator_temperatures = _temperature_sample()
+    states = (
+        _bind(_STATES.SequentialLimbTestState("sequence_joint", 10, session)),
+        _bind(_STATES.SequentialVibrationState("sequence_vibration", 11, session)),
+    )
+    for state, expected_next in zip(
+        states, (_STATES.SEQUENCE_VIBRATION, _STATES.SEQUENCE_RUNNING)
+    ):
+        state.on_enter(ctx)
+        if isinstance(state, _STATES.SequentialLimbTestState):
+            state.segment_index = len(state.segments)
+        else:
+            state.entered_at -= 300.1
+        state.on_update(ctx, 0.005)
+        assert state.stopping
+        state.stop_started_at -= 0.51
+        ctx.robot_joints.position[0] += math.radians(6.0)
+        state.on_update(ctx, 0.005)
+        assert ctx.requests == []
+        ctx.robot_joints.position[:] = JOINT_NOMINAL_POS
+        state.on_update(ctx, 0.005)
+        assert ctx.requests[-1][0] == expected_next
+        ctx.requests.clear()
+
+
+def test_sequence_stage_handoff_rejection_faults_without_old_command():
+    class RejectingContext(_Context):
+        def request_state(self, name, *, trigger, force=False):
+            if name == _STATES.SEQUENCE_RUNNING:
+                return False
+            return super().request_state(name, trigger=trigger, force=force)
+
+    session = _STATES.TestSession()
+    session.ready = True
+    ctx = RejectingContext()
+    state = _bind(_STATES.SequentialVibrationState("sequence_vibration", 11, session))
+    state.on_enter(ctx)
+    state.on_action(ctx, "stop")
+    state.stop_started_at -= 0.51
+    state.on_update(ctx, 0.005)
+    assert session.faulted
+    assert ctx.frame is None
+    assert ctx.requests[-1][0] == _STATES.ZERO_TORQUE
+
+
+def test_sequence_run_stops_on_any_joint_temperature_limit():
+    session = _STATES.TestSession()
+    session.ready = True
+    ctx = _Context()
+    ctx.actuator_temperatures = _temperature_sample()
+    state = _bind(_STATES.SequentialRunningState("sequence_running", 12, session))
+    state.on_enter(ctx)
+    state.on_update(ctx, 0.005)
+    assert ctx.frame is not None
+    motor = list(ctx.actuator_temperatures.motor_c)
+    motor[-1] = state.motor_limit_c
+    ctx.actuator_temperatures = _temperature_sample(motor=motor)
+    ctx.frame = None
+    state.on_update(ctx, 0.005)
+    assert ctx.frame is None
+    assert ctx.requests[-1] == (_STATES.ZERO_TORQUE, "test_safety_fault", True)
+    assert JOINT_NAMES[-1] in state.logger.errors[-1]
+    assert "60.0 C" in state.logger.errors[-1]
+
+
+def test_sequence_temperature_check_uses_names_not_message_order():
+    ctx = _Context()
+    reversed_names = tuple(reversed(JOINT_NAMES))
+    motor = [35.0] * len(reversed_names)
+    motor[-1] = 61.0
+    ctx.actuator_temperatures = _temperature_sample(
+        names=reversed_names, motor=motor,
+    )
+    reason = _STATES.temperature_fault(
+        ctx, motor_limit_c=60.0, driver_limit_c=0.0, timeout_sec=0.5,
+    )
+    assert JOINT_NAMES[0] in reason
+
+
+def test_sequence_temperature_check_includes_extra_published_joint():
+    ctx = _Context()
+    names = (*JOINT_NAMES, "head_y_joint")
+    ctx.actuator_temperatures = _temperature_sample(
+        names=names,
+        motor=[35.0] * len(JOINT_NAMES) + [61.0],
+    )
+    reason = _STATES.temperature_fault(
+        ctx, motor_limit_c=60.0, driver_limit_c=0.0, timeout_sec=0.5,
+    )
+    assert "head_y_joint" in reason
+
+
+def test_sequence_rejects_missing_temperature_before_joint_motion():
+    session = _STATES.TestSession()
+    session.ready = True
+    ctx = _Context()
+    state = _bind(_STATES.SequentialLimbTestState("sequence_joint", 10, session))
+    state.on_enter(ctx)
+    assert session.faulted
+    assert ctx.frame is None
+    assert ctx.requests[-1][0] == _STATES.ZERO_TORQUE
+
+
+@pytest.mark.parametrize("params", [
+    {"motor_limit_c": 0.0},
+    {"motor_limit_c": float("nan")},
+    {"driver_limit_c": -1.0},
+    {"temperature_timeout_sec": 0.0},
+])
+def test_sequence_rejects_invalid_temperature_limits(params):
+    with pytest.raises(ValueError):
+        _STATES.SequentialRunningState(
+            "sequence_running", 12, _STATES.TestSession(), **params,
+        )
+
+
+def test_actuator_callback_captures_named_temperature_snapshot():
+    from bxi_example_py_elf3.bxi_example_demo import BxiExample
+
+    updates = []
+    node = SimpleNamespace(
+        lock_in=RLock(),
+        _actuator_temperatures=None,
+        _update_joint_state=lambda *args: updates.append(args),
+    )
+    msg = SimpleNamespace(
+        name=[JOINT_NAMES[1], JOINT_NAMES[0]],
+        position=[0.0, 0.0],
+        velocity=[0.0, 0.0],
+        motor_temperature=[41.0, 42.0],
+        driver_temperature=[43.0, 44.0],
+    )
+    BxiExample.actuator_callback(node, msg)
+    assert node._actuator_temperatures.names == tuple(msg.name)
+    assert node._actuator_temperatures.motor_c == (41.0, 42.0)
+    assert node._actuator_temperatures.driver_c == (43.0, 44.0)
+    assert updates == [(msg.name, msg.position, msg.velocity)]
+
+
+@pytest.mark.parametrize("case, reason", [
+    ("missing", "missing"),
+    ("stale", "stale"),
+    ("missing_joint", "missing joint"),
+    ("invalid_motor", "invalid motor"),
+    ("hot_driver", "driver temperature"),
+])
+def test_sequence_run_fails_closed_on_bad_temperature_feedback(case, reason):
+    session = _STATES.TestSession()
+    session.ready = True
+    ctx = _Context()
+    ctx.actuator_temperatures = {
+        "missing": None,
+        "stale": _temperature_sample(age=1.0),
+        "missing_joint": _temperature_sample(names=JOINT_NAMES[:-1]),
+        "invalid_motor": _temperature_sample(
+            motor=[float("nan")] + [35.0] * (len(JOINT_NAMES) - 1)
+        ),
+        "hot_driver": _temperature_sample(
+            driver=[70.0] + [35.0] * (len(JOINT_NAMES) - 1)
+        ),
+    }[case]
+    state = _bind(_STATES.SequentialRunningState(
+        "sequence_running", 12, session, driver_limit_c=60.0,
+    ))
+    state.on_enter(ctx)
+    assert session.faulted
+    assert ctx.requests[-1][0] == _STATES.ZERO_TORQUE
+    assert reason in state.logger.errors[-1]
 
 
 def test_test_exit_does_not_trigger_pd_when_left_shoulder_is_released_first():
@@ -321,8 +511,11 @@ def test_test_remote_guard_blocks_basic_buttons_and_covers_fault_exit():
     basic_state = _STATES.ZERO_TORQUE
     pd = "com.bxi.basic_actions/pd_brake"
     run = "com.bxi.suspended_tests/running"
+    sequence = "com.bxi.suspended_tests/sequence"
 
-    assert guard(SimpleNamespace(btn_3=1), [pd, run], test_state) == [run]
+    assert guard(SimpleNamespace(btn_3=1), [pd, run, sequence], test_state) == [
+        run, sequence,
+    ]
     guard.observe_state(basic_state)
     assert guard(SimpleNamespace(btn_3=1), [pd], basic_state) == []
     assert guard(SimpleNamespace(), [], basic_state) == []
@@ -571,6 +764,7 @@ def test_full_mod_routes_and_timer_handoff(monkeypatch):
             omega=np.zeros(3),
             raw_cmd_vel=np.zeros(3, dtype=np.float32),
             linear_acceleration=np.zeros(3),
+            actuator_temperatures=_temperature_sample(),
         )
 
         class Platform:
@@ -593,6 +787,7 @@ def test_full_mod_routes_and_timer_handoff(monkeypatch):
         runtime._platform = platform
 
         runtime._run_control_cycle(test_owner=False)
+        assert runtime.framework.actuator_temperatures is observation.actuator_temperatures
         assert runtime.current_state_name == "com.bxi.basic_actions/pd_brake"
         node.topic_prefix = "hardware/"
         platform.events = ["com.bxi.suspended_tests/test_mode"]
@@ -655,6 +850,20 @@ def test_full_mod_routes_and_timer_handoff(monkeypatch):
         assert idle.prepare_sec == 3.0
         assert idle.prepare_kp_scale == 1.1
         assert idle.center_kd_scale == 1.05
+        idle.entered_at -= 10.1
+        runtime._run_control_cycle(test_owner=True)
+        assert idle.session.ready
+
+        observation.actuator_temperatures = _temperature_sample()
+        platform.events = ["com.bxi.suspended_tests/sequence"]
+        runtime._run_control_cycle(test_owner=True)
+        assert runtime.current_state_name == "com.bxi.suspended_tests/sequence_joint"
+        platform.events = ["com.bxi.suspended_tests/exit_test_mode"]
+        runtime._run_control_cycle(test_owner=True)
+        assert runtime.current_state_name == _STATES.ZERO_TORQUE
+        platform.events = ["com.bxi.suspended_tests/test_mode"]
+        runtime._run_control_cycle(test_owner=False)
+        assert runtime.current_state_name == _STATES.TEST_IDLE
         idle.entered_at -= 10.1
         runtime._run_control_cycle(test_owner=True)
         assert idle.session.ready

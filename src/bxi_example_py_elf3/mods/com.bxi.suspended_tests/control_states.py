@@ -34,6 +34,8 @@ from bxi_example_py_elf3.framework.mod_api import RobotControlState
 
 TEST_LAYOUT = JointLayout(JOINT_NAMES, label="ELF3 suspended tests")
 TEST_IDLE = "com.bxi.suspended_tests/idle"
+SEQUENCE_VIBRATION = "com.bxi.suspended_tests/sequence_vibration"
+SEQUENCE_RUNNING = "com.bxi.suspended_tests/sequence_running"
 ZERO_TORQUE = "com.bxi.basic_actions/zero_torque"
 PD_BRAKE = "com.bxi.basic_actions/pd_brake"
 JOINT_MARGIN_RAD = 0.02
@@ -81,6 +83,7 @@ class SuspendedState(RobotControlState):
         self.last_command = JOINT_NOMINAL_POS.copy()
         self.command_limit_slack_rad = 0.0
         self._warned_limit_joints = set()
+        self.return_state = TEST_IDLE
 
     def is_available(self, ctx):
         return self.session.ready and not self.session.faulted
@@ -161,6 +164,22 @@ class SuspendedState(RobotControlState):
 
     def _update_stop(self, ctx, center):
         elapsed = time.monotonic() - self.stop_started_at
+        if self.return_state != TEST_IDLE and elapsed >= RETURN_SEC:
+            measured = self.session.measured(ctx)
+            error = np.max(np.abs(measured - center))
+            if error <= IDLE_CENTER_TOLERANCE_RAD:
+                accepted = ctx.request_state(
+                    self.return_state, trigger="test_stage_complete",
+                )
+                if accepted is False:
+                    self._fault(ctx, "next test stage %s is unavailable" % self.return_state)
+                return
+            if elapsed >= RETURN_SEC + 5.0:
+                self._fault(
+                    ctx, "sequence did not settle at center: %.2f deg"
+                    % math.degrees(error),
+                )
+                return
         progress = minimum_jerk_progress(elapsed / RETURN_SEC)
         self._command(
             ctx,
@@ -168,7 +187,7 @@ class SuspendedState(RobotControlState):
             JOINT_KP * self.session.center_kp_scale,
             JOINT_KD * self.session.center_kd_scale,
         )
-        if elapsed >= RETURN_SEC:
+        if elapsed >= RETURN_SEC and self.return_state == TEST_IDLE:
             ctx.request_state(TEST_IDLE, trigger="test_stopped", force=True)
 
     def _checked_feedback(self, ctx):
@@ -533,3 +552,102 @@ class SuspendedLimbTestState(SuspendedState):
         if progress >= 1.0:
             self.segment_started_at = time.monotonic()
             self.holding = True
+
+
+class SequentialLimbTestState(SuspendedLimbTestState):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.return_state = SEQUENCE_VIBRATION
+
+    def on_enter(self, ctx):
+        reason = temperature_fault(
+            ctx, motor_limit_c=float("inf"), driver_limit_c=0.0,
+            timeout_sec=0.5,
+        )
+        if reason is not None:
+            self._fault(ctx, "cannot start sequence: %s" % reason)
+            return
+        super().on_enter(ctx)
+
+
+class SequentialVibrationState(SuspendedVibrationState):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.return_state = SEQUENCE_RUNNING
+
+
+def temperature_fault(ctx, *, motor_limit_c, driver_limit_c, timeout_sec):
+    sample = getattr(ctx, "actuator_temperatures", None)
+    if sample is None:
+        return "actuator temperature feedback is missing"
+    age = time.monotonic() - sample.received_at
+    if not math.isfinite(age) or age < 0.0 or age > timeout_sec:
+        return "actuator temperature feedback is stale (age=%.3fs)" % age
+    names = sample.names
+    if len(names) != len(set(names)) or len(sample.motor_c) != len(names):
+        return "actuator motor temperature names/values are incomplete"
+    if driver_limit_c > 0.0 and len(sample.driver_c) != len(names):
+        return "actuator driver temperature names/values are incomplete"
+    available_names = set(names)
+    for name in JOINT_NAMES:
+        if name not in available_names:
+            return "actuator temperature is missing joint %s" % name
+    for index, name in enumerate(names):
+        motor = sample.motor_c[index]
+        if not math.isfinite(motor):
+            return "invalid motor temperature for %s" % name
+        if motor >= motor_limit_c:
+            return "%s motor temperature %.1f C reached %.1f C limit" % (
+                name, motor, motor_limit_c,
+            )
+        if driver_limit_c > 0.0:
+            driver = sample.driver_c[index]
+            if not math.isfinite(driver):
+                return "invalid driver temperature for %s" % name
+            if driver >= driver_limit_c:
+                return "%s driver temperature %.1f C reached %.1f C limit" % (
+                    name, driver, driver_limit_c,
+                )
+    return None
+
+
+class SequentialRunningState(SuspendedRunningState):
+    def __init__(
+        self, name, state_id, session, *, motor_limit_c=60.0,
+        driver_limit_c=0.0, temperature_timeout_sec=0.5,
+    ):
+        super().__init__(name, state_id, session)
+        if not all(math.isfinite(value) for value in (
+            motor_limit_c, driver_limit_c, temperature_timeout_sec,
+        )):
+            raise ValueError("sequence temperature limits must be finite")
+        if not 0.0 < motor_limit_c <= 150.0:
+            raise ValueError("motor_limit_c must be in (0, 150]")
+        if not 0.0 <= driver_limit_c <= 150.0:
+            raise ValueError("driver_limit_c must be in [0, 150]")
+        if not 0.0 < temperature_timeout_sec <= 2.0:
+            raise ValueError("temperature_timeout_sec must be in (0, 2]")
+        self.motor_limit_c = motor_limit_c
+        self.driver_limit_c = driver_limit_c
+        self.temperature_timeout_sec = temperature_timeout_sec
+
+    def _check_temperature(self, ctx):
+        reason = temperature_fault(
+            ctx,
+            motor_limit_c=self.motor_limit_c,
+            driver_limit_c=self.driver_limit_c,
+            timeout_sec=self.temperature_timeout_sec,
+        )
+        if reason is not None:
+            self._fault(ctx, reason)
+            return False
+        return True
+
+    def on_enter(self, ctx):
+        super().on_enter(ctx)
+        self._check_temperature(ctx)
+
+    def on_update(self, ctx, dt):
+        if self.session.faulted or not self._check_temperature(ctx):
+            return
+        super().on_update(ctx, dt)

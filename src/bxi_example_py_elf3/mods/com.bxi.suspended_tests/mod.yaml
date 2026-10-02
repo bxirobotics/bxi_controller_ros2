@@ -23,6 +23,7 @@ events:
   running: {slot: btn_9, value: 1}
   vibration: {slot: btn_10, value: 1}
   whole_body_joint_test: {slot: btn_7, value: 1}
+  sequence: {slot: btn_9, value: 2}
 
 states:
   idle:
@@ -54,6 +55,24 @@ states:
       mechanical_margin_deg: 2.0
       tracking_tolerance_deg: 2.0
       start_tolerance_deg: 5.0
+  sequence_joint:
+    manifest: {label: 自动测试-关节行程, priority: 870, group: Tests, confirm: true}
+    inference_hz: 200.0
+    params:
+      range_speed_deg_s: 180.0
+      move_sec: 1.5
+      hold_sec: 0.2
+      collision_margin_deg: 10.0
+      mechanical_margin_deg: 2.0
+      tracking_tolerance_deg: 2.0
+      start_tolerance_deg: 5.0
+  sequence_vibration:
+    manifest: {label: 自动测试-振动, priority: 860, group: Tests}
+    inference_hz: 200.0
+  sequence_running:
+    manifest: {label: 自动测试-跑步, priority: 850, group: Tests}
+    inference_hz: 200.0
+    params: {motor_limit_c: 60.0, driver_limit_c: 0.0, temperature_timeout_sec: 0.5}
 
 routes:
   - {from: com.bxi.basic_actions/pd_brake, event: test_mode, to: idle}
@@ -62,9 +81,13 @@ routes:
   - {from: running, event: exit_test_mode, to: com.bxi.basic_actions/zero_torque}
   - {from: vibration, event: exit_test_mode, to: com.bxi.basic_actions/zero_torque}
   - {from: whole_body_joint_test, event: exit_test_mode, to: com.bxi.basic_actions/zero_torque}
+  - {from: sequence_joint, event: exit_test_mode, to: com.bxi.basic_actions/zero_torque}
+  - {from: sequence_vibration, event: exit_test_mode, to: com.bxi.basic_actions/zero_torque}
+  - {from: sequence_running, event: exit_test_mode, to: com.bxi.basic_actions/zero_torque}
   - {from: idle, event: running, to: running}
   - {from: idle, event: vibration, to: vibration}
   - {from: idle, event: whole_body_joint_test, to: whole_body_joint_test}
+  - {from: idle, event: sequence, to: sequence_joint}
 
 actions:
   - {from: running, event: running, action: stop, manifest: {label: 停止悬挂跑动}}

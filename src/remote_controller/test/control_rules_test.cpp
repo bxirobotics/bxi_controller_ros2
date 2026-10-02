@@ -249,7 +249,7 @@ void test_suspended_face_buttons_keep_existing_outputs()
     }
 }
 
-void test_b_button_only_sets_release_marker()
+void test_b_button_selects_sequence_without_shoulders()
 {
     const RemoteConfig config = remote_controller::load_remote_config(
         REMOTE_CONTROLLER_TEST_CONFIG_PATH);
@@ -265,7 +265,7 @@ void test_b_button_only_sets_release_marker()
     expect(message.btn_6 == 0);
     expect(message.btn_7 == 0);
     expect(message.btn_8 == 3);
-    expect(message.btn_9 == 0);
+    expect(message.btn_9 == 2);
     expect(message.btn_10 == 0);
 }
 
@@ -312,6 +312,8 @@ void test_basic_and_test_mode_buttons_do_not_overlap()
     only(buttons_for({{"js.button.0", 1.0}}), 7);
     only(buttons_for({{"js.button.3", 1.0}}), 9);
     only(buttons_for({{"js.button.4", 1.0}}), 10);
+    const auto sequence_buttons = buttons_for({{"js.button.1", 1.0}});
+    expect(sequence_buttons[7] == 3 && sequence_buttons[8] == 2);
 
     expect(buttons_for({{"js.button.6", 1.0}})[7] == 3);
     expect(buttons_for({{"js.button.7", 1.0}})[7] == 3);
@@ -413,7 +415,7 @@ int main()
     test_bool_all_keeps_inactive_raw_inputs_in_the_selected_group();
     test_debug_reports_changed_rule_selection();
     test_suspended_face_buttons_keep_existing_outputs();
-    test_b_button_only_sets_release_marker();
+    test_b_button_selects_sequence_without_shoulders();
     test_basic_and_test_mode_buttons_do_not_overlap();
     test_lie_down_keeps_original_rt_y_shortcut();
     test_start_buttons_select_distinct_imu_sources();

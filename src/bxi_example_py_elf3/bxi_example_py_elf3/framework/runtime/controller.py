@@ -72,6 +72,7 @@ class RobotControlFramework:
         self._command_defaults = command_defaults
         self._robot_layout: JointLayout | None = None
         self._robot_joints: JointStateView | None = None
+        self.actuator_temperatures = None
         self._inference_frame: InferenceFrame | None = None
         self._command_resolver: JointCommandResolver | None = None
         self._resolved_motor_frame: MotorFrame | None = None
@@ -471,6 +472,7 @@ class RobotControlFramework:
 
     def _set_observation(self, observation: RobotObservation) -> None:
         joints = observation.joints
+        self.actuator_temperatures = observation.actuator_temperatures
         if self._robot_layout is None:
             self._bind_robot_layout(joints)
         elif (
