@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import MISSING, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from types import UnionType
@@ -20,6 +20,8 @@ from .transition import TransitionPlugin
 ParamT = TypeVar("ParamT")
 ParamsT = TypeVar("ParamsT")
 StateFactory = Callable[["StateBuildContext"], RobotControlState]
+RemoteEventFilter = Callable[[object, Sequence[str], str], list[str]]
+StateObserver = Callable[[str], None]
 
 
 @dataclass(frozen=True)
@@ -113,6 +115,8 @@ class ModDefinition:
     transition_plugins: Mapping[str, type[TransitionPlugin]] = field(
         default_factory=dict
     )
+    remote_event_filter: RemoteEventFilter | None = None
+    state_observer: StateObserver | None = None
 
 
 class _ResourceRegistry(Protocol):

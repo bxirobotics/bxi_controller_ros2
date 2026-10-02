@@ -115,9 +115,20 @@ outputs:
       when: [system.start_hardware_event]
 
   level:
-    # Both shoulders + Y switches between zero torque and suspended tests.
+    # Both shoulders + B exits suspended tests to zero torque.
+    - output: btn_8=2
+      when: [shoulder.left_event, shoulder.right_event, button.b_event]
+    # Both shoulders + Y enters suspended tests from the basic domain.
     - output: btn_8=1
       when: [shoulder.left_event, shoulder.right_event, button.y_event]
+    # Keep a release marker until LB, RB and B are all up. Combo rules above
+    # take precedence under the configured first_wins conflict policy.
+    - output: btn_8=3
+      when: [shoulder.left_event]
+    - output: btn_8=3
+      when: [shoulder.right_event]
+    - output: btn_8=3
+      when: [button.b_event]
     # Both shoulders + X toggles the forward/back mode from normal.
     - output: btn_5=1
       when: [shoulder.left_event, shoulder.right_event, button.x_event]

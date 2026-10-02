@@ -26,6 +26,8 @@ from bxi_example_py_elf3.framework.mod_api_version import (
 from bxi_example_py_elf3.framework.mod_api.mod import (
     ModDefinition,
     ModLoadContext,
+    RemoteEventFilter,
+    StateObserver,
     StateBuildContext,
     StateFactory,
 )
@@ -180,6 +182,8 @@ class _VendorSession:
 class ModRuntime:
     config: ConfigMap
     state_factories: dict[str, StateFactory]
+    remote_event_filters: tuple[RemoteEventFilter, ...]
+    state_observers: tuple[StateObserver, ...]
     resources: ResourceManager
     mods: tuple[LoadedMod, ...]
     disabled_mods: tuple[LoadedMod, ...]
@@ -366,6 +370,16 @@ def load_mod_runtime(
     return ModRuntime(
         config=config,
         state_factories=factories,
+        remote_event_filters=tuple(
+            definition.remote_event_filter
+            for definition in definitions.values()
+            if definition.remote_event_filter is not None
+        ),
+        state_observers=tuple(
+            definition.state_observer
+            for definition in definitions.values()
+            if definition.state_observer is not None
+        ),
         resources=resources,
         mods=loaded,
         disabled_mods=disabled,

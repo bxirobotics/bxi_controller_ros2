@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from pathlib import Path
 from threading import Event, RLock
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ import time
 
 import numpy as np
 import pytest
+import yaml
 
 from bxi_example_py_elf3.control.elf3 import (
     JOINT_KD,
@@ -26,6 +28,7 @@ from bxi_example_py_elf3.framework.runtime.control_scheduler import (
     ControlCycleResult,
     ControlScheduler,
 )
+from bxi_example_py_elf3.framework.runtime.state_machine import RemoteEventAdapter
 
 
 _STATES_PATH = (
@@ -36,6 +39,12 @@ _SPEC = importlib.util.spec_from_file_location("suspended_control_states_test", 
 assert _SPEC is not None and _SPEC.loader is not None
 _STATES = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_STATES)
+
+_GUARD_PATH = _STATES_PATH.with_name("remote_guard.py")
+_GUARD_SPEC = importlib.util.spec_from_file_location("suspended_remote_guard_test", _GUARD_PATH)
+assert _GUARD_SPEC is not None and _GUARD_SPEC.loader is not None
+_GUARD = importlib.util.module_from_spec(_GUARD_SPEC)
+_GUARD_SPEC.loader.exec_module(_GUARD)
 
 
 class _Logger:
@@ -219,6 +228,115 @@ def test_active_test_commands_keep_original_limit():
     assert "over=1.00 deg" in state.logger.errors[0]
 
 
+def test_test_mode_has_one_button_exit_and_ignores_basic_mode_buttons():
+    config = yaml.safe_load(
+        (_STATES_PATH.parent / "mod.yaml").read_text(encoding="utf-8")
+    )
+    assert config["events"]["test_mode"] == {"slot": "btn_8", "value": 1}
+    assert config["events"]["exit_test_mode"] == {"slot": "btn_8", "value": 2}
+    for source in ("idle", "running", "vibration", "whole_body_joint_test"):
+        routes = [route for route in config["routes"] if route["from"] == source]
+        exits = [route for route in routes if route["to"] == _STATES.ZERO_TORQUE]
+        assert exits == [{"from": source, "event": "exit_test_mode", "to": _STATES.ZERO_TORQUE}]
+        assert all(route["event"] != "test_mode" for route in routes)
+
+    adapter = RemoteEventAdapter({
+        "test_mode": config["events"]["test_mode"],
+        "exit_test_mode": config["events"]["exit_test_mode"],
+    })
+    assert adapter.extract_events(SimpleNamespace(btn_8=1)) == ["test_mode"]
+    assert adapter.extract_events(SimpleNamespace(btn_8=2)) == ["exit_test_mode"]
+
+
+def test_test_exit_does_not_trigger_pd_when_left_shoulder_is_released_first():
+    from bxi_example_py_elf3.bxi_example_demo import BxiExample
+
+    adapter = RemoteEventAdapter({
+        "com.bxi.suspended_tests/exit_test_mode": {"slot": "btn_8", "value": 2},
+        "com.bxi.basic_actions/pd_brake": {"slot": "btn_3", "value": 1},
+        "com.bxi.basic_actions/initial_pos": {"slot": "btn_4", "value": 1},
+    })
+    guard = _GUARD.TestRemoteGuard()
+    state = [_STATES.TEST_IDLE]
+
+    def extract(msg, *, sync_only=False):
+        events = adapter.extract_events(msg, sync_only=sync_only)
+        return guard(msg, events, state[0])
+
+    node = SimpleNamespace(
+        runtime=SimpleNamespace(extract_remote_events=extract),
+        step=2,
+        lock_in=RLock(),
+        raw_cmd_vel=np.zeros(3, dtype=np.float32),
+        pending_remote_events=deque(),
+    )
+
+    def send(btn_8=0, btn_3=0, btn_4=0):
+        msg = SimpleNamespace(
+            btn_8=btn_8, btn_3=btn_3, btn_4=btn_4,
+            vel_des=SimpleNamespace(x=0.0, y=0.0), yawdot_des=0.0,
+        )
+        BxiExample.joy_callback(node, msg)
+
+    send(btn_4=1)
+    assert list(node.pending_remote_events) == []
+    send(btn_8=2)
+    assert list(node.pending_remote_events) == ["com.bxi.suspended_tests/exit_test_mode"]
+    node.pending_remote_events.clear()
+    state[0] = _STATES.ZERO_TORQUE
+    send(btn_8=3, btn_3=1)
+    assert list(node.pending_remote_events) == []
+    send(btn_8=3, btn_3=1, btn_4=1)
+    assert list(node.pending_remote_events) == []
+    send(btn_8=3)
+    assert list(node.pending_remote_events) == []
+    send()
+    send(btn_8=3, btn_3=1)
+    assert list(node.pending_remote_events) == ["com.bxi.basic_actions/pd_brake"]
+
+
+def test_test_exit_waits_for_all_button_slots_to_be_neutral():
+    guard = _GUARD.TestRemoteGuard()
+    test_state = _STATES.TEST_IDLE
+    basic_state = _STATES.ZERO_TORQUE
+
+    def filtered(state, events=(), **buttons):
+        message = SimpleNamespace(**buttons)
+        return guard(message, events, state)
+
+    assert filtered(test_state, [_GUARD._EXIT], btn_8=2) == [_GUARD._EXIT]
+    assert filtered(basic_state, ["com.bxi.basic_actions/pd_brake"], btn_8=2) == []
+    assert filtered(basic_state, [], btn_8=3) == []
+    assert filtered(basic_state, ["com.bxi.basic_actions/initial_pos"], btn_4=1) == []
+    assert filtered(basic_state, ["com.bxi.basic_actions/pd_brake"], btn_3=1) == []
+    assert filtered(basic_state) == []
+    assert filtered(basic_state, ["com.bxi.basic_actions/pd_brake"], btn_3=1) == [
+        "com.bxi.basic_actions/pd_brake"
+    ]
+
+
+def test_test_remote_guard_blocks_basic_buttons_and_covers_fault_exit():
+    guard = _GUARD.TestRemoteGuard()
+    test_state = _STATES.TEST_IDLE
+    basic_state = _STATES.ZERO_TORQUE
+    pd = "com.bxi.basic_actions/pd_brake"
+    run = "com.bxi.suspended_tests/running"
+
+    assert guard(SimpleNamespace(btn_3=1), [pd, run], test_state) == [run]
+    guard.observe_state(basic_state)
+    assert guard(SimpleNamespace(btn_3=1), [pd], basic_state) == []
+    assert guard(SimpleNamespace(), [], basic_state) == []
+    assert guard(SimpleNamespace(btn_3=1), [pd], basic_state) == [pd]
+
+
+def test_test_remote_guard_covers_fault_without_a_test_state_joy_message():
+    guard = _GUARD.TestRemoteGuard()
+    guard.observe_state(_STATES.TEST_IDLE)
+    guard.observe_state(_STATES.ZERO_TORQUE)
+    pd = "com.bxi.basic_actions/pd_brake"
+    assert guard(SimpleNamespace(btn_3=1), [pd], _STATES.ZERO_TORQUE) == []
+
+
 def test_full_range_requires_center_before_transition():
     session = _STATES.TestSession()
     idle = _bind(_STATES.SuspendedIdleState("com.bxi.suspended_tests/idle", 1, session))
@@ -373,12 +491,20 @@ def test_full_mod_routes_and_timer_handoff(monkeypatch):
     from bxi_example_py_elf3.framework.joints import JointStateBuffer
     from bxi_example_py_elf3.framework.platform import RobotObservation
 
+    monkeypatch.setattr(
+        "bxi_example_py_elf3.bxi_example_demo.get_package_share_directory",
+        lambda package: str(_STATES_PATH.parents[2]),
+    )
     monkeypatch.setenv("ROS_DOMAIN_ID", str(100 + os.getpid() % 100))
     monkeypatch.setenv("ROS_LOCALHOST_ONLY", "1")
     rclpy.init()
     node = None
     try:
         node = BxiExample(cpu_affinity_plan=_CPU_AFFINITY_PLAN)
+        assert any(
+            type(event_filter).__name__ == "TestRemoteGuard"
+            for event_filter in node.runtime.framework.mod_runtime.remote_event_filters
+        )
         node.release_suspension = True
         node.topic_prefix = "simulation/"
         automatic_state_requests = []
@@ -478,6 +604,9 @@ def test_full_mod_routes_and_timer_handoff(monkeypatch):
         assert runtime.current_state_name == _STATES.TEST_IDLE
         platform.events = ["com.bxi.suspended_tests/test_mode"]
         runtime._run_control_cycle(test_owner=True)
+        assert runtime.current_state_name == _STATES.TEST_IDLE
+        platform.events = ["com.bxi.suspended_tests/exit_test_mode"]
+        runtime._run_control_cycle(test_owner=True)
         assert runtime.current_state_name == _STATES.ZERO_TORQUE
         runtime._run_control_cycle(test_owner=False)
         platform.events = ["com.bxi.basic_actions/forward_back"]
@@ -544,7 +673,7 @@ def test_full_mod_routes_and_timer_handoff(monkeypatch):
         runtime._run_control_cycle(test_owner=True)
         assert runtime.current_state_name == _STATES.TEST_IDLE
 
-        platform.events = ["com.bxi.suspended_tests/test_mode"]
+        platform.events = ["com.bxi.suspended_tests/exit_test_mode"]
         count = len(platform.published)
         runtime._run_control_cycle(test_owner=True)
         assert runtime.current_state_name == _STATES.ZERO_TORQUE
@@ -561,6 +690,12 @@ def test_full_mod_routes_and_timer_handoff(monkeypatch):
         runtime._run_control_cycle(test_owner=True)
         assert runtime.current_state_name == "com.bxi.suspended_tests/vibration"
         platform.events = ["com.bxi.basic_actions/zero_torque"]
+        runtime._run_control_cycle(test_owner=True)
+        assert runtime.current_state_name == "com.bxi.suspended_tests/vibration"
+        platform.events = ["com.bxi.basic_actions/pd_brake", "com.bxi.suspended_tests/test_mode"]
+        runtime._run_control_cycle(test_owner=True)
+        assert runtime.current_state_name == "com.bxi.suspended_tests/vibration"
+        platform.events = ["com.bxi.suspended_tests/exit_test_mode"]
         count = len(platform.published)
         runtime._run_control_cycle(test_owner=True)
         assert runtime.current_state_name == _STATES.ZERO_TORQUE

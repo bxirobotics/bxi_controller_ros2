@@ -249,7 +249,7 @@ void test_suspended_face_buttons_keep_existing_outputs()
     }
 }
 
-void test_unassigned_b_button_has_no_motion_command_output()
+void test_b_button_only_sets_release_marker()
 {
     const RemoteConfig config = remote_controller::load_remote_config(
         REMOTE_CONTROLLER_TEST_CONFIG_PATH);
@@ -264,7 +264,7 @@ void test_unassigned_b_button_has_no_motion_command_output()
     expect(message.btn_5 == 0);
     expect(message.btn_6 == 0);
     expect(message.btn_7 == 0);
-    expect(message.btn_8 == 0);
+    expect(message.btn_8 == 3);
     expect(message.btn_9 == 0);
     expect(message.btn_10 == 0);
 }
@@ -287,24 +287,66 @@ void test_basic_and_test_mode_buttons_do_not_overlap()
         };
     };
 
-    const auto only = [](const std::vector<int> &buttons, int index) {
+    const auto only = [](const std::vector<int> &buttons, int index, int release_marker = 0) {
         for (int i = 0; i < 10; ++i) {
-            expect(buttons[i] == (i == index - 1 ? 1 : 0));
+            expect(buttons[i] == (i == index - 1 ? 1 : (i == 7 ? release_marker : 0)));
         }
     };
 
-    only(buttons_for({{"js.button.7", 1.0}, {"js.button.3", 1.0}}), 1);
-    only(buttons_for({{"js.button.7", 1.0}, {"js.button.0", 1.0}}), 2);
-    only(buttons_for({{"js.button.7", 1.0}, {"js.button.1", 1.0}}), 3);
-    only(buttons_for({{"js.button.7", 1.0}, {"js.button.4", 1.0}}), 4);
-    only(buttons_for({{"js.button.6", 1.0}, {"js.button.0", 1.0}}), 6);
+    only(buttons_for({{"js.button.7", 1.0}, {"js.button.3", 1.0}}), 1, 3);
+    only(buttons_for({{"js.button.7", 1.0}, {"js.button.0", 1.0}}), 2, 3);
+    only(buttons_for({{"js.button.7", 1.0}, {"js.button.1", 1.0}}), 3, 3);
+    only(buttons_for({{"js.button.7", 1.0}, {"js.button.4", 1.0}}), 4, 3);
+    only(buttons_for({{"js.button.6", 1.0}, {"js.button.0", 1.0}}), 6, 3);
     only(buttons_for({{"js.button.6", 1.0}, {"js.button.7", 1.0},
                       {"js.button.4", 1.0}}), 8);
-    only(buttons_for({{"js.button.6", 1.0}, {"js.button.7", 1.0},
-                      {"js.button.3", 1.0}}), 5);
+    const auto exit_buttons = buttons_for({{"js.button.6", 1.0}, {"js.button.7", 1.0},
+                                           {"js.button.1", 1.0}});
+    for (int i = 0; i < 10; ++i) {
+        expect(exit_buttons[i] == (i == 7 ? 2 : 0));
+    }
+    const auto forward_buttons = buttons_for({{"js.button.6", 1.0}, {"js.button.7", 1.0},
+                                               {"js.button.3", 1.0}});
+    expect(forward_buttons[4] == 1);
+    expect(forward_buttons[7] == 3);
     only(buttons_for({{"js.button.0", 1.0}}), 7);
     only(buttons_for({{"js.button.3", 1.0}}), 9);
     only(buttons_for({{"js.button.4", 1.0}}), 10);
+
+    expect(buttons_for({{"js.button.6", 1.0}})[7] == 3);
+    expect(buttons_for({{"js.button.7", 1.0}})[7] == 3);
+    expect(buttons_for({{"js.button.1", 1.0}})[7] == 3);
+    expect(buttons_for({})[7] == 0);
+
+    InputMapper mapper(config);
+    communication::msg::MotionCommands message;
+    mapper.set_signals({{"js.button.6", 1.0}, {"js.button.7", 1.0},
+                        {"js.button.1", 1.0}});
+    mapper.fill_message(message);
+    expect(message.btn_8 == 2);
+    mapper.set_signal("js.button.6", 0.0);
+    mapper.fill_message(message);
+    expect(message.btn_8 == 3 && message.btn_3 == 1);
+    mapper.set_signal("js.button.7", 0.0);
+    mapper.fill_message(message);
+    expect(message.btn_8 == 3 && message.btn_3 == 0);
+    mapper.set_signal("js.button.1", 0.0);
+    mapper.fill_message(message);
+    expect(message.btn_8 == 0);
+
+    mapper.set_signals({{"js.button.6", 1.0}, {"js.button.7", 1.0},
+                        {"js.button.1", 1.0}});
+    mapper.fill_message(message);
+    expect(message.btn_8 == 2);
+    mapper.set_signal("js.button.1", 0.0);
+    mapper.fill_message(message);
+    expect(message.btn_8 == 3);
+    mapper.set_signal("js.button.6", 0.0);
+    mapper.fill_message(message);
+    expect(message.btn_8 == 3);
+    mapper.set_signal("js.button.7", 0.0);
+    mapper.fill_message(message);
+    expect(message.btn_8 == 0);
 }
 
 void test_lie_down_keeps_original_rt_y_shortcut()
@@ -371,7 +413,7 @@ int main()
     test_bool_all_keeps_inactive_raw_inputs_in_the_selected_group();
     test_debug_reports_changed_rule_selection();
     test_suspended_face_buttons_keep_existing_outputs();
-    test_unassigned_b_button_has_no_motion_command_output();
+    test_b_button_only_sets_release_marker();
     test_basic_and_test_mode_buttons_do_not_overlap();
     test_lie_down_keeps_original_rt_y_shortcut();
     test_start_buttons_select_distinct_imu_sources();

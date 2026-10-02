@@ -156,6 +156,7 @@ class RobotControlFramework:
                 logger=loggers.framework("state_machine"),
                 enter_initial=False,
             )
+            self._notify_state_observers()
             self._initial_state_entered = False
             self.remote_event_adapter = RemoteEventAdapter(
                 self.config.get("remote_events", {})
@@ -242,6 +243,7 @@ class RobotControlFramework:
         transition_active = self.state_machine.update(self.dt, events)
         if not transition_active:
             self.state_machine.update_current_state(self.dt)
+        self._notify_state_observers()
 
         frame = self._motor_target
         if frame is not None:
@@ -267,7 +269,15 @@ class RobotControlFramework:
         *,
         sync_only: bool = False,
     ) -> list[str]:
-        return self.remote_event_adapter.extract_events(values, sync_only=sync_only)
+        events = self.remote_event_adapter.extract_events(values, sync_only=sync_only)
+        for event_filter in self.mod_runtime.remote_event_filters:
+            events = event_filter(values, events, self.current_state_name)
+        return events
+
+    def _notify_state_observers(self) -> None:
+        state_name = self.current_state_name
+        for observer in self.mod_runtime.state_observers:
+            observer(state_name)
 
     def request_state(
         self,
@@ -285,13 +295,15 @@ class RobotControlFramework:
                 (state_name, trigger, transition, float(delay), force)
             )
             return True
-        return self.state_machine.request_transition(
+        accepted = self.state_machine.request_transition(
             state_name,
             trigger=trigger,
             transition=transition,
             delay=delay,
             force=force,
         )
+        self._notify_state_observers()
+        return accepted
 
     def _apply_pending_state_requests(self) -> None:
         if not self._pending_state_requests:

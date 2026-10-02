@@ -9,11 +9,15 @@ from .control_states import (
     SuspendedVibrationState,
     TestSession,
 )
+from .remote_guard import TestRemoteGuard
 
 
 def create_mod(context: ModLoadContext) -> ModDefinition:
     session = TestSession()
+    remote_guard = TestRemoteGuard()
     return ModDefinition(
+        remote_event_filter=remote_guard,
+        state_observer=remote_guard.observe_state,
         state_factories={
             "idle": lambda state: SuspendedIdleState(
                 state.name, state.state_id, session,
