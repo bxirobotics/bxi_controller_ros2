@@ -1,5 +1,5 @@
 # ELF3 joint metadata. Set motor_model to a key in motor_models.yaml.
-# An unconfigured joint uses the default 90 C motor temperature limit.
+# An unconfigured joint uses the default 90 C torque limit (75 C test stop).
 # position_limit_rad comes from data/elf3.xml (simulation/software limits), not MIT encoding.
 # max_command_torque_nm is a per-joint hardware setting; null means not documented.
 robot: elf3

@@ -92,3 +92,6 @@ actions:
   - {from: running, event: running, action: stop, manifest: {label: 停止悬挂跑动}}
   - {from: vibration, event: vibration, action: stop, manifest: {label: 停止扫频振动}}
   - {from: whole_body_joint_test, event: whole_body_joint_test, action: stop, manifest: {label: 停止全关节测试}}
+  - {from: sequence_joint, event: sequence, action: cancel_sequence, manifest: {label: 退出自动测试}}
+  - {from: sequence_vibration, event: sequence, action: cancel_sequence, manifest: {label: 退出自动测试}}
+  - {from: sequence_running, event: sequence, action: cancel_sequence, manifest: {label: 退出自动测试}}

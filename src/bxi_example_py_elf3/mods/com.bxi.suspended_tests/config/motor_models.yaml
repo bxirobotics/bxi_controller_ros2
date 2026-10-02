@@ -1,5 +1,6 @@
 # Motor temperature protection by model.
-# Missing torque_limit_c uses 90 C; shutdown_c has no software default.
+# The B test stops 15 C below torque_limit_c. Missing torque_limit_c uses 90 C
+# (75 C test stop); shutdown_c has no software default.
 models:
   BXI_50:
     temperature: {torque_limit_c: 90, shutdown_c: 105}

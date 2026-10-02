@@ -239,6 +239,17 @@ def test_test_mode_has_one_button_exit_and_ignores_basic_mode_buttons():
     assert config["events"]["test_mode"] == {"slot": "btn_8", "value": 1}
     assert config["events"]["exit_test_mode"] == {"slot": "btn_8", "value": 2}
     assert config["events"]["sequence"] == {"slot": "btn_9", "value": 2}
+    action_by_state = {action["from"]: action for action in config["actions"]}
+    for source, event in (
+        ("running", "running"),
+        ("vibration", "vibration"),
+        ("whole_body_joint_test", "whole_body_joint_test"),
+    ):
+        assert action_by_state[source]["event"] == event
+        assert action_by_state[source]["action"] == "stop"
+    for source in ("sequence_joint", "sequence_vibration", "sequence_running"):
+        assert action_by_state[source]["event"] == "sequence"
+        assert action_by_state[source]["action"] == "cancel_sequence"
     for source in (
         "idle", "running", "vibration", "whole_body_joint_test",
         "sequence_joint", "sequence_vibration", "sequence_running",
@@ -310,6 +321,7 @@ def test_sequence_advances_only_after_return_to_center():
     ):
         state.on_enter(ctx)
         if isinstance(state, _STATES.SequentialLimbTestState):
+            state.zeroing = False
             state.segment_index = len(state.segments)
         else:
             state.entered_at -= 300.1
@@ -323,6 +335,132 @@ def test_sequence_advances_only_after_return_to_center():
         state.on_update(ctx, 0.005)
         assert ctx.requests[-1][0] == expected_next
         ctx.requests.clear()
+
+
+def test_joint_range_moves_all_joints_to_zero_before_scanning():
+    session = _STATES.TestSession()
+    session.ready = True
+    state = _bind(_STATES.SuspendedLimbTestState("whole_body_joint_test", 4, session))
+    ctx = _Context()
+    state.on_enter(ctx)
+    assert state.zeroing
+    assert state.segment_index == 0
+    state.zero_started_at -= _STATES.ZERO_PREPARE_SEC / 2.0
+    state.on_update(ctx, 0.005)
+    np.testing.assert_allclose(ctx.frame.qpos, JOINT_NOMINAL_POS / 2.0, atol=1e-3)
+    assert state.segment_index == 0
+    state.zero_started_at -= _STATES.ZERO_PREPARE_SEC / 2.0 + 0.1
+    state.on_update(ctx, 0.005)
+    assert state.zeroing
+    np.testing.assert_allclose(ctx.frame.qpos, np.zeros_like(JOINT_NOMINAL_POS))
+    ctx.robot_joints.position[:] = 0.0
+    state.on_update(ctx, 0.005)
+    assert not state.zeroing
+    state.on_update(ctx, 0.005)
+    np.testing.assert_allclose(ctx.frame.qpos, np.zeros_like(JOINT_NOMINAL_POS), atol=1e-3)
+
+
+def test_joint_range_zero_timeout_faults_with_joint_name():
+    session = _STATES.TestSession()
+    session.ready = True
+    state = _bind(_STATES.SuspendedLimbTestState("whole_body_joint_test", 4, session))
+    ctx = _Context()
+    state.on_enter(ctx)
+    state.zero_started_at -= _STATES.ZERO_PREPARE_SEC + 5.1
+    state.on_update(ctx, 0.005)
+    assert session.faulted
+    assert ctx.requests[-1][0] == _STATES.ZERO_TORQUE
+    assert "joint range zero pose did not settle" in state.logger.errors[-1]
+
+
+def test_same_test_key_stops_and_reentry_starts_from_beginning():
+    session = _STATES.TestSession()
+    session.ready = True
+    ctx = _Context()
+    for state_type, state_name in (
+        (_STATES.SuspendedRunningState, "com.bxi.suspended_tests/running"),
+        (_STATES.SuspendedVibrationState, "com.bxi.suspended_tests/vibration"),
+        (_STATES.SuspendedLimbTestState, "com.bxi.suspended_tests/whole_body_joint_test"),
+    ):
+        state = _bind(state_type(state_name, 4, session))
+        state.on_enter(ctx)
+        state.on_update(ctx, 0.005)
+        assert state.on_action(ctx, "stop")
+        assert state.stopping
+        state.stop_started_at -= _STATES.RETURN_SEC + 0.01
+        state.on_update(ctx, 0.005)
+        assert ctx.requests[-1][0] == _STATES.TEST_IDLE
+        state.on_enter(ctx)
+        assert not state.stopping
+        if isinstance(state, _STATES.SuspendedRunningState):
+            assert state.phase == "center_blend"
+        elif isinstance(state, _STATES.SuspendedVibrationState):
+            assert time.monotonic() - state.entered_at < 0.1
+        else:
+            assert state.zeroing and state.segment_index == 0
+
+
+def test_b_second_press_cancels_to_idle_without_advancing_stage():
+    session = _session_with_limits()
+    ctx = _Context()
+    ctx.actuator_temperatures = _temperature_sample()
+    state = _bind(_STATES.SequentialLimbTestState(_STATES.SEQUENCE_JOINT, 10, session))
+    state.on_enter(ctx)
+    state.on_update(ctx, 0.005)
+    assert state.on_action(ctx, "cancel_sequence")
+    assert session.sequence_cancel_requested
+    assert state.return_state == _STATES.TEST_IDLE
+    state.stop_started_at -= _STATES.RETURN_SEC + 0.01
+    state.on_update(ctx, 0.005)
+    assert ctx.requests[-1][0] == _STATES.TEST_IDLE
+    session.observe_sequence_state(_STATES.TEST_IDLE)
+    assert "INCOMPLETE" in state.logger.errors[-1]
+    assert not session.sequence_active
+    assert not session.sequence_cancel_requested
+    state.on_enter(ctx)
+    assert state.return_state == _STATES.SEQUENCE_VIBRATION
+    assert state.zeroing and state.segment_index == 0
+
+
+@pytest.mark.parametrize(
+    "state_type, state_name, expected_result",
+    (
+        (_STATES.SequentialVibrationState, _STATES.SEQUENCE_VIBRATION, "INCOMPLETE"),
+        (_STATES.SequentialRunningState, _STATES.SEQUENCE_RUNNING, "SUCCESS"),
+    ),
+)
+def test_b_cancel_in_later_stage_returns_to_center(state_type, state_name, expected_result):
+    session = _session_with_limits()
+    ctx = _Context()
+    ctx.actuator_temperatures = _temperature_sample()
+    logger = _Logger()
+    session.start_sequence(logger, joint_command="segments=60")
+    state = _bind(state_type(state_name, 11, session))
+    state.on_enter(ctx)
+    assert state.on_action(ctx, "cancel_sequence")
+    state.stop_started_at -= _STATES.RETURN_SEC + 0.01
+    state.on_update(ctx, 0.005)
+    assert ctx.requests[-1][0] == _STATES.TEST_IDLE
+    session.observe_sequence_state(_STATES.TEST_IDLE)
+    messages = logger.warnings + logger.errors
+    assert any(expected_result in message for message in messages)
+    assert not session.sequence_active
+
+
+def test_b_cancel_during_stage_handoff_does_not_advance():
+    session = _session_with_limits()
+    ctx = _Context()
+    ctx.actuator_temperatures = _temperature_sample()
+    state = _bind(_STATES.SequentialVibrationState(_STATES.SEQUENCE_VIBRATION, 11, session))
+    session.start_sequence(state.logger, joint_command="segments=60")
+    state.on_enter(ctx)
+    assert state.on_action(ctx, "stop")
+    assert state.return_state == _STATES.SEQUENCE_RUNNING
+    assert state.on_action(ctx, "cancel_sequence")
+    assert state.return_state == _STATES.TEST_IDLE
+    state.stop_started_at -= _STATES.RETURN_SEC + 0.01
+    state.on_update(ctx, 0.005)
+    assert ctx.requests[-1][0] == _STATES.TEST_IDLE
 
 
 def test_sequence_stage_handoff_rejection_faults_without_old_command():
@@ -364,6 +502,70 @@ def test_sequence_run_stops_on_any_joint_temperature_limit():
     assert "60.0 C" in state.logger.errors[-1]
 
 
+def test_b_sequence_logs_full_command_and_fault_result_once():
+    session = _session_with_limits()
+    ctx = _Context()
+    ctx.actuator_temperatures = _temperature_sample()
+    state = _bind(_STATES.SequentialLimbTestState("sequence_joint", 10, session))
+    state.on_enter(ctx)
+    assert any("FULL B TEST #1 START" in line for line in state.logger.warnings)
+    assert any("STAGE 1/3" in line for line in state.logger.warnings)
+    assert any("COMMAND" in line and "segments=" in line for line in state.logger.warnings)
+    assert any("MOTOR LIMITS" in line and
+               "standard test_stop=45.0 C, torque=60.0 C, shutdown=80.0 C" in line
+               for line in state.logger.warnings)
+
+    state._fault(ctx, "joint feedback is stale")
+    session.observe_sequence_state(_STATES.ZERO_TORQUE)
+    assert "B TEST #1 FAILED" in state.logger.errors[-1]
+    assert "joint feedback is stale" in state.logger.errors[-1]
+    assert "sequence_joint" in state.logger.errors[-1]
+    error_count = len(state.logger.errors)
+    session.observe_sequence_state(_STATES.ZERO_TORQUE)
+    assert len(state.logger.errors) == error_count
+
+
+def test_b_sequence_manual_exit_after_running_logs_success():
+    session = _session_with_limits()
+    logger = _Logger()
+    session.start_sequence(logger, joint_command="segments=12")
+    session.enter_sequence_stage(_STATES.SEQUENCE_VIBRATION, "STAGE 2/3: vibration")
+    session.enter_sequence_stage(_STATES.SEQUENCE_RUNNING, "STAGE 3/3: running")
+    guard = _GUARD.TestRemoteGuard(on_sequence_exit=lambda state: setattr(
+        session, "sequence_exit_requested", state == _STATES.SEQUENCE_RUNNING,
+    ))
+    guard(
+        SimpleNamespace(btn_8=2), ["com.bxi.suspended_tests/exit_test_mode"],
+        _STATES.SEQUENCE_RUNNING,
+    )
+    session.observe_sequence_state(_STATES.ZERO_TORQUE)
+    assert any("B TEST #1 SUCCESS" in line for line in logger.warnings)
+    assert logger.errors == []
+
+
+def test_b_sequence_early_exit_reports_incomplete_reason():
+    session = _session_with_limits()
+    logger = _Logger()
+    session.start_sequence(logger, joint_command="segments=12")
+    session.sequence_exit_requested = True
+    session.observe_sequence_state(_STATES.ZERO_TORQUE)
+    assert "B TEST #1 INCOMPLETE" in logger.errors[-1]
+    assert "operator exited before running stage" in logger.errors[-1]
+
+
+def test_b_sequence_rejected_exit_does_not_log_success_later():
+    session = _session_with_limits()
+    logger = _Logger()
+    session.start_sequence(logger, joint_command="segments=12")
+    session.enter_sequence_stage(_STATES.SEQUENCE_RUNNING, "STAGE 3/3: running")
+    session.sequence_exit_requested = True
+    session.observe_sequence_state(_STATES.SEQUENCE_RUNNING)
+    assert not session.sequence_exit_requested
+    session.observe_sequence_state(_STATES.ZERO_TORQUE)
+    assert "unexpected state transition" in logger.errors[-1]
+    assert not any("SUCCESS" in line for line in logger.warnings)
+
+
 def test_sequence_temperature_check_uses_names_not_message_order():
     ctx = _Context()
     reversed_names = tuple(reversed(JOINT_NAMES))
@@ -383,20 +585,21 @@ def test_sequence_temperature_check_includes_extra_published_joint():
     names = (*JOINT_NAMES, "head_y_joint")
     ctx.actuator_temperatures = _temperature_sample(
         names=names,
-        motor=[35.0] * len(JOINT_NAMES) + [89.9],
+        motor=[35.0] * len(JOINT_NAMES) + [74.9],
     )
     reason = _STATES.temperature_fault(
         ctx, policy=_session_with_limits().temperature_policy, timeout_sec=0.5,
     )
     assert reason is None
     ctx.actuator_temperatures = _temperature_sample(
-        names=names, motor=[35.0] * len(JOINT_NAMES) + [90.0],
+        names=names, motor=[35.0] * len(JOINT_NAMES) + [75.0],
     )
     reason = _STATES.temperature_fault(
         ctx, policy=_session_with_limits().temperature_policy, timeout_sec=0.5,
     )
     assert "head_y_joint" in reason
-    assert "90.0 C" in reason
+    assert "test stop 75.0 C" in reason
+    assert "torque limit 90.0 C" in reason
 
     ctx.actuator_temperatures = _temperature_sample(
         names=names, motor=[35.0] * len(JOINT_NAMES) + [61.0],
@@ -422,6 +625,7 @@ def test_sequence_rejects_missing_temperature_before_joint_motion():
 
 @pytest.mark.parametrize("limits", [
     {"torque_limit_c": 0.0, "shutdown_c": 80.0},
+    {"torque_limit_c": 15.0, "shutdown_c": 80.0},
     {"torque_limit_c": float("nan"), "shutdown_c": 80.0},
     {"torque_limit_c": 80.0, "shutdown_c": 60.0},
     {"torque_limit_c": 60.0, "shutdown_c": -1.0},
@@ -532,6 +736,27 @@ def test_sequence_temperature_config_template_and_model_lookup(tmp_path):
     assert policy.models["hotter"] == (70.0, 90.0)
 
 
+@pytest.mark.parametrize("model_name, torque_limit_c", [
+    ("BXI_50", 90.0), ("BXI_50L", 90.0),
+    ("BXI_70", 100.0), ("BXI_85", 100.0),
+])
+def test_configured_motor_test_stop_is_15_c_below_torque_limit(model_name, torque_limit_c):
+    policy = _STATES.load_temperature_policy(_STATES_PATH.parent / "config")
+    joint = next(name for name in JOINT_NAMES if policy.joint_models[name] == model_name)
+    joint_index = JOINT_NAMES.index(joint)
+    ctx = _Context()
+    motor = [35.0] * len(JOINT_NAMES)
+    motor[joint_index] = torque_limit_c - 15.1
+    ctx.actuator_temperatures = _temperature_sample(motor=motor)
+    assert _STATES.temperature_fault(ctx, policy=policy, timeout_sec=0.5) is None
+    motor[joint_index] = torque_limit_c - 15.0
+    ctx.actuator_temperatures = _temperature_sample(motor=motor)
+    reason = _STATES.temperature_fault(ctx, policy=policy, timeout_sec=0.5)
+    assert joint in reason
+    assert "test stop %.1f C" % (torque_limit_c - 15.0) in reason
+    assert "torque limit %.1f C" % torque_limit_c in reason
+
+
 def test_joint_metadata_matches_elf3_model_ranges():
     template_dir = _STATES_PATH.parent / "config"
     joint_config = yaml.safe_load(
@@ -604,25 +829,26 @@ def test_sequence_uses_model_specific_torque_limit():
     policy = _session_with_limits(extra={JOINT_NAMES[-1]: "hotter"}).temperature_policy
     ctx = _Context()
     motor = [35.0] * len(JOINT_NAMES)
-    motor[-1] = 65.0
+    motor[-1] = 54.9
     ctx.actuator_temperatures = _temperature_sample(motor=motor)
     assert _STATES.temperature_fault(ctx, policy=policy, timeout_sec=0.5) is None
-    motor[-1] = 70.0
+    motor[-1] = 55.0
     ctx.actuator_temperatures = _temperature_sample(motor=motor)
     reason = _STATES.temperature_fault(ctx, policy=policy, timeout_sec=0.5)
-    assert JOINT_NAMES[-1] in reason and "hotter" in reason and "70.0 C" in reason
+    assert JOINT_NAMES[-1] in reason and "hotter" in reason
+    assert "test stop 55.0 C" in reason and "torque limit 70.0 C" in reason
 
 
 @pytest.mark.parametrize("state_type", [
     _STATES.SequentialLimbTestState, _STATES.SequentialVibrationState,
 ])
-def test_sequence_early_stages_stop_at_torque_limit(state_type):
+def test_sequence_early_stages_stop_before_torque_limit(state_type):
     session = _session_with_limits()
     ctx = _Context()
     ctx.actuator_temperatures = _temperature_sample()
     state = _bind(state_type("sequence", 10, session))
     state.on_enter(ctx)
-    ctx.actuator_temperatures = _temperature_sample(motor=[60.0] + [35.0] * (len(JOINT_NAMES) - 1))
+    ctx.actuator_temperatures = _temperature_sample(motor=[45.0] + [35.0] * (len(JOINT_NAMES) - 1))
     ctx.frame = None
     state.on_update(ctx, 0.005)
     assert session.faulted
@@ -630,7 +856,7 @@ def test_sequence_early_stages_stop_at_torque_limit(state_type):
     assert ctx.requests[-1][0] == _STATES.ZERO_TORQUE
 
 
-def test_sequence_unfilled_config_starts_and_stops_at_90_c(tmp_path):
+def test_sequence_unfilled_config_defaults_to_75_c_test_stop(tmp_path):
     _write_temperature_config(
         tmp_path,
         {name: "standard" for name in JOINT_NAMES},
@@ -644,13 +870,14 @@ def test_sequence_unfilled_config_starts_and_stops_at_90_c(tmp_path):
     state = _bind(_STATES.SequentialLimbTestState("sequence_joint", 10, session))
     state.on_enter(ctx)
     assert not session.faulted
-    assert any("default 90.0 C" in message for message in state.logger.warnings)
+    assert any("default 90.0 C motor torque limit and 75.0 C test stop" in message
+               for message in state.logger.warnings)
     ctx.actuator_temperatures = _temperature_sample(
-        motor=[90.0] + [35.0] * (len(JOINT_NAMES) - 1)
+        motor=[75.0] + [35.0] * (len(JOINT_NAMES) - 1)
     )
     state.on_update(ctx, 0.005)
     assert session.faulted
-    assert "90.0 C" in state.logger.errors[-1]
+    assert "test stop 75.0 C" in state.logger.errors[-1]
     assert ctx.requests[-1][0] == _STATES.ZERO_TORQUE
 
 
@@ -839,10 +1066,12 @@ def test_running_vibration_and_limb_states_emit_single_frame():
         np.testing.assert_allclose(ctx.frame.kp, JOINT_KP, rtol=1e-5)
         np.testing.assert_allclose(ctx.frame.kd, JOINT_KD, rtol=1e-5)
         assert state.on_action(ctx, "stop")
-        state.stop_started_at -= 0.51
+        state.stop_started_at -= 0.25
         state.on_update(ctx, 0.005)
         np.testing.assert_allclose(ctx.frame.kp, JOINT_KP * 1.1, rtol=1e-5)
         np.testing.assert_allclose(ctx.frame.kd, JOINT_KD * 1.05, rtol=1e-5)
+        state.stop_started_at -= 0.26
+        state.on_update(ctx, 0.005)
         assert ctx.requests[-1][0] == _STATES.TEST_IDLE
 
 
@@ -1125,6 +1354,18 @@ def test_full_mod_routes_and_timer_handoff(monkeypatch):
         platform.events = ["com.bxi.suspended_tests/sequence"]
         runtime._run_control_cycle(test_owner=True)
         assert runtime.current_state_name == "com.bxi.suspended_tests/sequence_joint"
+        platform.events = ["com.bxi.suspended_tests/sequence"]
+        runtime._run_control_cycle(test_owner=True)
+        joint_stage = runtime.framework.state_machine._states[_STATES.SEQUENCE_JOINT]
+        assert joint_stage.stopping
+        joint_stage.stop_started_at -= _STATES.RETURN_SEC + 0.01
+        runtime._run_control_cycle(test_owner=True)
+        assert runtime.current_state_name == _STATES.TEST_IDLE
+        runtime._run_control_cycle(test_owner=True)
+        assert idle.session.ready
+        platform.events = ["com.bxi.suspended_tests/sequence"]
+        runtime._run_control_cycle(test_owner=True)
+        assert runtime.current_state_name == _STATES.SEQUENCE_JOINT
         platform.events = ["com.bxi.suspended_tests/exit_test_mode"]
         runtime._run_control_cycle(test_owner=True)
         assert runtime.current_state_name == _STATES.ZERO_TORQUE

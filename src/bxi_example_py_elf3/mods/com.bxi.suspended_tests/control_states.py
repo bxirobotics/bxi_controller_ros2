@@ -38,17 +38,26 @@ from bxi_example_py_elf3.framework.mod_api import RobotControlState
 
 TEST_LAYOUT = JointLayout(JOINT_NAMES, label="ELF3 suspended tests")
 TEST_IDLE = "com.bxi.suspended_tests/idle"
+SEQUENCE_JOINT = "com.bxi.suspended_tests/sequence_joint"
 SEQUENCE_VIBRATION = "com.bxi.suspended_tests/sequence_vibration"
 SEQUENCE_RUNNING = "com.bxi.suspended_tests/sequence_running"
+SEQUENCE_STATES = frozenset((SEQUENCE_JOINT, SEQUENCE_VIBRATION, SEQUENCE_RUNNING))
 ZERO_TORQUE = "com.bxi.basic_actions/zero_torque"
 PD_BRAKE = "com.bxi.basic_actions/pd_brake"
 JOINT_MARGIN_RAD = 0.02
 FEEDBACK_TIMEOUT_SEC = 0.2
 COMMAND_GAP_TIMEOUT_SEC = 0.05
 RETURN_SEC = 0.5
+ZERO_PREPARE_SEC = 3.0
 IDLE_CENTER_TOLERANCE_RAD = math.radians(5.0)
 TEMPERATURE_TIMEOUT_SEC = 0.5
 DEFAULT_TORQUE_LIMIT_C = 90.0
+TEST_STOP_MARGIN_C = 15.0
+VIBRATION_DURATION_SEC = 300.0
+VIBRATION_START_HZ = 10.0
+VIBRATION_END_HZ = 20.0
+VIBRATION_AMPLITUDE_RAD = 0.23
+RUNNING_TRAJECTORY_RATE_HZ = 50.0
 
 
 class MotorTemperaturePolicy:
@@ -194,6 +203,11 @@ def load_temperature_policy(config_dir: Path):
                     or not 0.0 < value <= 150.0):
                 raise ValueError("model %s %s must be in (0, 150]" % (name, label))
         effective_torque = float(torque) if torque is not None else DEFAULT_TORQUE_LIMIT_C
+        if effective_torque <= TEST_STOP_MARGIN_C:
+            raise ValueError(
+                "model %s torque_limit_c must exceed %.1f C test stop margin"
+                % (name, TEST_STOP_MARGIN_C)
+            )
         if torque is None:
             defaulted_models.add(name)
         if shutdown is not None and shutdown <= effective_torque:
@@ -213,6 +227,105 @@ class TestSession:
         self.last_control_at = 0.0
         self.temperature_policy = None
         self.temperature_config_error = "motor temperature configuration is missing"
+        self.sequence_id = 0
+        self.sequence_active = False
+        self.sequence_stage = None
+        self.sequence_started_at = 0.0
+        self.sequence_logger = None
+        self.sequence_fault_reason = None
+        self.sequence_exit_requested = False
+        self.sequence_cancel_requested = False
+
+    def start_sequence(self, logger, *, joint_command):
+        self.sequence_id += 1
+        self.sequence_active = True
+        self.sequence_stage = SEQUENCE_JOINT
+        self.sequence_started_at = time.monotonic()
+        self.sequence_logger = logger
+        self.sequence_fault_reason = None
+        self.sequence_exit_requested = False
+        self.sequence_cancel_requested = False
+        if self.temperature_policy is None:
+            temperature_command = self.temperature_config_error
+        else:
+            models = sorted(set(self.temperature_policy.joint_models.values()) - {None})
+            temperature_command = ", ".join(
+                "%s test_stop=%.1f C, torque=%.1f C, shutdown=%s%s" % (
+                    model,
+                    self.temperature_policy.models.get(model, (DEFAULT_TORQUE_LIMIT_C, None))[0]
+                    - TEST_STOP_MARGIN_C,
+                    self.temperature_policy.models.get(model, (DEFAULT_TORQUE_LIMIT_C, None))[0],
+                    ("%.1f C" % self.temperature_policy.models[model][1]
+                     if model in self.temperature_policy.models
+                     and self.temperature_policy.models[model][1] is not None
+                     else "unconfigured"),
+                    " (default)" if model in self.temperature_policy.defaulted_models
+                    or model not in self.temperature_policy.models else "",
+                )
+                for model in models
+            ) or "all joints: test_stop=%.1f C, torque=%.1f C (default)" % (
+                DEFAULT_TORQUE_LIMIT_C - TEST_STOP_MARGIN_C, DEFAULT_TORQUE_LIMIT_C,
+            )
+            unmapped = sum(
+                self.temperature_policy.joint_models.get(joint) is None
+                for joint in JOINT_NAMES
+            )
+            if unmapped:
+                temperature_command += "; %d unmapped joints: test_stop=%.1f C, torque=%.1f C (default)" % (
+                    unmapped, DEFAULT_TORQUE_LIMIT_C - TEST_STOP_MARGIN_C,
+                    DEFAULT_TORQUE_LIMIT_C,
+                )
+        logger.warning("========== FULL B TEST #%d START ==========" % self.sequence_id)
+        logger.warning(
+            "B TEST #%d COMMAND: input=B; joint range -> vibration %.0f s "
+            "(%.0f..%.0f Hz, amplitude %.2f rad) -> running trajectory "
+            "(%.0f Hz, until exit=B or LB+RB+B or safety stop); %s"
+            % (
+                self.sequence_id, VIBRATION_DURATION_SEC, VIBRATION_START_HZ,
+                VIBRATION_END_HZ, VIBRATION_AMPLITUDE_RAD,
+                RUNNING_TRAJECTORY_RATE_HZ, joint_command,
+            )
+        )
+        logger.warning("B TEST #%d MOTOR LIMITS: %s" % (self.sequence_id, temperature_command))
+        logger.warning("B TEST #%d STAGE 1/3: joint range started" % self.sequence_id)
+
+    def enter_sequence_stage(self, stage, label):
+        if self.sequence_active:
+            self.sequence_stage = stage
+            self.sequence_logger.warning(
+                "B TEST #%d %s started" % (self.sequence_id, label)
+            )
+
+    def observe_sequence_state(self, state_name):
+        if not self.sequence_active:
+            return
+        if state_name in SEQUENCE_STATES:
+            self.sequence_exit_requested = False
+            return
+        elapsed = time.monotonic() - self.sequence_started_at
+        if self.sequence_fault_reason is not None:
+            self.sequence_logger.error(
+                "========== B TEST #%d FAILED after %.1f s at %s: %s =========="
+                % (self.sequence_id, elapsed, self.sequence_stage, self.sequence_fault_reason)
+            )
+        elif (self.sequence_exit_requested or self.sequence_cancel_requested) and self.sequence_stage == SEQUENCE_RUNNING:
+            self.sequence_logger.warning(
+                "========== B TEST #%d SUCCESS after %.1f s: operator ended running stage; "
+                "final_state=%s ==========" % (self.sequence_id, elapsed, state_name)
+            )
+        else:
+            reason = (
+                "operator exited before running stage"
+                if self.sequence_exit_requested or self.sequence_cancel_requested
+                else "unexpected state transition"
+            )
+            self.sequence_logger.error(
+                "========== B TEST #%d INCOMPLETE after %.1f s at %s: %s; final_state=%s =========="
+                % (self.sequence_id, elapsed, self.sequence_stage, reason, state_name)
+            )
+        self.sequence_active = False
+        self.sequence_logger = None
+        self.sequence_cancel_requested = False
 
     def measured(self, ctx):
         now = time.monotonic()
@@ -250,6 +363,8 @@ class SuspendedState(RobotControlState):
     def _fault(self, ctx, reason):
         self.session.ready = False
         self.session.faulted = True
+        if self.session.sequence_active and self.session.sequence_fault_reason is None:
+            self.session.sequence_fault_reason = reason
         self.logger.error("suspended test fault: %s; switching to zero torque" % reason)
         ctx.request_state(ZERO_TORQUE, trigger="test_safety_fault", force=True)
 
@@ -313,7 +428,17 @@ class SuspendedState(RobotControlState):
         )
 
     def on_action(self, ctx, action_name):
-        if action_name != "stop" or self.stopping:
+        if action_name == "cancel_sequence" and self.name in SEQUENCE_STATES:
+            self.session.sequence_cancel_requested = True
+            self.return_state = TEST_IDLE
+            if self.stopping:
+                self.stop_started_at = time.monotonic()
+                self.stop_from[:] = self.last_command
+                return True
+            return self.on_action(ctx, "stop")
+        if action_name == "stop" and self.stopping:
+            return True
+        if action_name != "stop":
             return False
         self.stopping = True
         self.stop_started_at = time.monotonic()
@@ -323,19 +448,21 @@ class SuspendedState(RobotControlState):
 
     def _update_stop(self, ctx, center):
         elapsed = time.monotonic() - self.stop_started_at
-        if self.return_state != TEST_IDLE and elapsed >= RETURN_SEC:
+        if elapsed >= RETURN_SEC:
             measured = self.session.measured(ctx)
             error = np.max(np.abs(measured - center))
             if error <= IDLE_CENTER_TOLERANCE_RAD:
                 accepted = ctx.request_state(
-                    self.return_state, trigger="test_stage_complete",
+                    self.return_state,
+                    trigger="test_stopped" if self.return_state == TEST_IDLE else "test_stage_complete",
+                    force=self.return_state == TEST_IDLE,
                 )
                 if accepted is False:
                     self._fault(ctx, "next test stage %s is unavailable" % self.return_state)
                 return
             if elapsed >= RETURN_SEC + 5.0:
                 self._fault(
-                    ctx, "sequence did not settle at center: %.2f deg"
+                    ctx, "test did not settle at center: %.2f deg"
                     % math.degrees(error),
                 )
                 return
@@ -346,8 +473,6 @@ class SuspendedState(RobotControlState):
             JOINT_KP * self.session.center_kp_scale,
             JOINT_KD * self.session.center_kd_scale,
         )
-        if elapsed >= RETURN_SEC and self.return_state == TEST_IDLE:
-            ctx.request_state(TEST_IDLE, trigger="test_stopped", force=True)
 
     def _checked_feedback(self, ctx):
         try:
@@ -465,7 +590,7 @@ class SuspendedRunningState(SuspendedState):
     def __init__(self, name, state_id, session):
         super().__init__(name, state_id, session)
         path = get_package_share_path("bxi_example_py_elf3") / "data/data.txt"
-        self.trajectory = load_joint_trajectory(path, 50.0)
+        self.trajectory = load_joint_trajectory(path, RUNNING_TRAJECTORY_RATE_HZ)
         self.phase = "settle"
         self.phase_started_at = 0.0
         self.next_frame_at = 0.0
@@ -541,15 +666,16 @@ class SuspendedVibrationState(SuspendedState):
     def __init__(self, name, state_id, session):
         super().__init__(name, state_id, session)
         self.entered_at = 0.0
-        self.duration_sec = 300.0
-        self.start_hz = 10.0
-        self.end_hz = 20.0
-        self.amplitude_rad = 0.23
+        self.duration_sec = VIBRATION_DURATION_SEC
+        self.start_hz = VIBRATION_START_HZ
+        self.end_hz = VIBRATION_END_HZ
+        self.amplitude_rad = VIBRATION_AMPLITUDE_RAD
 
     def on_enter(self, ctx):
         self.stopping = False
         self.session.last_control_at = 0.0
         self.entered_at = time.monotonic()
+        self.last_command[:] = JOINT_NOMINAL_POS
         measured = self._checked_feedback(ctx)
         if measured is None:
             return
@@ -607,6 +733,10 @@ class SuspendedLimbTestState(SuspendedState):
             raise ValueError("joint range margins must be non-negative")
         if tracking_tolerance_deg <= 0.0 or start_tolerance_deg <= 0.0:
             raise ValueError("joint feedback tolerances must be positive")
+        self.range_speed_deg_s = range_speed_deg_s
+        self.move_sec = move_sec
+        self.collision_margin_deg = collision_margin_deg
+        self.mechanical_margin_deg = mechanical_margin_deg
         self.hold_sec = hold_sec
         self.tracking_tolerance_rad = math.radians(tracking_tolerance_deg)
         self.start_tolerance_rad = math.radians(start_tolerance_deg)
@@ -615,10 +745,11 @@ class SuspendedLimbTestState(SuspendedState):
             mechanical_margin_deg=mechanical_margin_deg,
         )
         self.segments = []
-        previous = JOINT_NOMINAL_POS.copy()
+        self.zero_position = np.zeros_like(JOINT_NOMINAL_POS)
+        previous = self.zero_position.copy()
         for group in WHOLE_BODY_TEST_GROUPS:
             motion_names, waypoints = full_range_waypoints(
-                JOINT_NOMINAL_POS, group, safe_ranges
+                self.zero_position, group, safe_ranges
             )
             for target in waypoints:
                 duration = velocity_limited_duration(
@@ -632,6 +763,9 @@ class SuspendedLimbTestState(SuspendedState):
         self.segment_started_at = 0.0
         self.holding = False
         self.next_start_warning_at = 0.0
+        self.zeroing = False
+        self.zero_started_at = 0.0
+        self.zero_from = JOINT_NOMINAL_POS.copy()
 
     def _start_pose_error(self, ctx):
         measured = self.session.measured(ctx)
@@ -673,10 +807,18 @@ class SuspendedLimbTestState(SuspendedState):
             )
             return
         self.segment_index = 0
-        self.segment_started_at = time.monotonic()
+        self.zero_from[:] = measured
+        self.zero_started_at = time.monotonic()
+        self.zeroing = True
+        self.segment_started_at = 0.0
         self.holding = False
+        self.last_command[:] = measured
         self.logger.warning(
-            "A-key MuJoCo collision checks are disabled; using joint limits and feedback checks"
+            "joint range preparation: moving all joints to 0 rad in %.1f s"
+            % ZERO_PREPARE_SEC
+        )
+        self.logger.warning(
+            "joint-range MuJoCo collision checks are disabled; using joint limits and feedback checks"
         )
 
     def on_update(self, ctx, dt):
@@ -685,6 +827,26 @@ class SuspendedLimbTestState(SuspendedState):
             return
         if self.stopping:
             self._update_stop(ctx, JOINT_NOMINAL_POS)
+            return
+        if self.zeroing:
+            elapsed = time.monotonic() - self.zero_started_at
+            position = self.zero_from + minimum_jerk_progress(elapsed / ZERO_PREPARE_SEC) * (
+                self.zero_position - self.zero_from
+            )
+            self._command(ctx, position)
+            if elapsed >= ZERO_PREPARE_SEC:
+                errors = np.abs(measured - self.zero_position)
+                index = int(np.argmax(errors))
+                if errors[index] <= self.start_tolerance_rad:
+                    self.zeroing = False
+                    self.segment_started_at = time.monotonic()
+                    self.logger.warning("joint range preparation complete: all joints at 0 rad")
+                elif elapsed >= ZERO_PREPARE_SEC + 5.0:
+                    self._fault(
+                        ctx, "joint range zero pose did not settle: %s error=%.2f deg, limit=%.2f deg"
+                        % (JOINT_NAMES[index], math.degrees(errors[index]),
+                           math.degrees(self.start_tolerance_rad)),
+                    )
             return
         if self.segment_index >= len(self.segments):
             self.on_action(ctx, "stop")
@@ -734,8 +896,10 @@ class SequentialTemperatureGuard:
             defaulted = [name for name in sample.names if policy.limits_for(name)[3]]
             if defaulted:
                 self.logger.warning(
-                    "using default %.1f C motor limit for %d unconfigured joints: %s"
-                    % (DEFAULT_TORQUE_LIMIT_C, len(defaulted), ", ".join(defaulted))
+                    "using default %.1f C motor torque limit and %.1f C test stop for %d "
+                    "unconfigured joints: %s"
+                    % (DEFAULT_TORQUE_LIMIT_C, DEFAULT_TORQUE_LIMIT_C - TEST_STOP_MARGIN_C,
+                       len(defaulted), ", ".join(defaulted))
                 )
         if self._check_temperature(ctx):
             super().on_enter(ctx)
@@ -750,10 +914,33 @@ class SequentialLimbTestState(SequentialTemperatureGuard, SuspendedLimbTestState
         super().__init__(*args, **kwargs)
         self.return_state = SEQUENCE_VIBRATION
 
+    def on_enter(self, ctx):
+        self.return_state = SEQUENCE_VIBRATION
+        self.session.start_sequence(
+            self.logger,
+            joint_command=(
+                "joints=%d, segments=%d, range_speed=%.1f deg/s, min_move=%.2f s, "
+                "hold=%.2f s, collision_margin=%.1f deg, mechanical_margin=%.1f deg, "
+                "tracking_tolerance=%.1f deg, start_tolerance=%.1f deg"
+            ) % (
+                len(JOINT_NAMES), len(self.segments), self.range_speed_deg_s,
+                self.move_sec, self.hold_sec, self.collision_margin_deg,
+                self.mechanical_margin_deg, math.degrees(self.tracking_tolerance_rad),
+                math.degrees(self.start_tolerance_rad),
+            ),
+        )
+        super().on_enter(ctx)
+
+
 class SequentialVibrationState(SequentialTemperatureGuard, SuspendedVibrationState):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.return_state = SEQUENCE_RUNNING
+
+    def on_enter(self, ctx):
+        self.return_state = SEQUENCE_RUNNING
+        self.session.enter_sequence_stage(SEQUENCE_VIBRATION, "STAGE 2/3: vibration")
+        super().on_enter(ctx)
 
 
 def temperature_fault(ctx, *, policy, timeout_sec):
@@ -775,14 +962,19 @@ def temperature_fault(ctx, *, policy, timeout_sec):
         motor = sample.motor_c[index]
         if not math.isfinite(motor):
             return "invalid motor temperature for %s" % name
-        if motor >= torque_limit_c:
+        test_stop_c = torque_limit_c - TEST_STOP_MARGIN_C
+        if motor >= test_stop_c:
             shutdown_label = "%.1f C" % shutdown_c if shutdown_c is not None else "unconfigured"
-            return ("%s (%s) motor temperature %.1f C reached torque limit %.1f C "
-                    "(shutdown threshold %s)") % (
-                name, model, motor, torque_limit_c, shutdown_label,
+            return ("%s (%s) motor temperature %.1f C reached test stop %.1f C "
+                    "(%.1f C below torque limit %.1f C; shutdown threshold %s)") % (
+                name, model, motor, test_stop_c, TEST_STOP_MARGIN_C,
+                torque_limit_c, shutdown_label,
             )
     return None
 
 
 class SequentialRunningState(SequentialTemperatureGuard, SuspendedRunningState):
-    pass
+    def on_enter(self, ctx):
+        self.return_state = TEST_IDLE
+        self.session.enter_sequence_stage(SEQUENCE_RUNNING, "STAGE 3/3: running")
+        super().on_enter(ctx)

@@ -13,6 +13,7 @@ from .control_states import (
     SequentialVibrationState,
     SequentialRunningState,
     TestSession,
+    SEQUENCE_STATES,
     load_temperature_policy,
 )
 from .remote_guard import TestRemoteGuard
@@ -27,7 +28,15 @@ def create_mod(context: ModLoadContext) -> ModDefinition:
         session.temperature_config_error = None
     except (OSError, ValueError, yaml.YAMLError) as exc:
         session.temperature_config_error = "motor temperature configuration invalid: %s" % exc
-    remote_guard = TestRemoteGuard()
+    def on_sequence_exit(current_state):
+        if session.sequence_active and current_state in SEQUENCE_STATES:
+            session.sequence_exit_requested = True
+
+    remote_guard = TestRemoteGuard(on_sequence_exit=on_sequence_exit)
+
+    def observe_state(current_state):
+        remote_guard.observe_state(current_state)
+        session.observe_sequence_state(current_state)
 
     def limb_test(state, state_type):
         return state_type(
@@ -45,7 +54,7 @@ def create_mod(context: ModLoadContext) -> ModDefinition:
 
     return ModDefinition(
         remote_event_filter=remote_guard,
-        state_observer=remote_guard.observe_state,
+        state_observer=observe_state,
         state_factories={
             "idle": lambda state: SuspendedIdleState(
                 state.name, state.state_id, session,

@@ -14,9 +14,10 @@ _TEST_EVENTS = frozenset({
 
 
 class TestRemoteGuard:
-    def __init__(self) -> None:
+    def __init__(self, on_sequence_exit=None) -> None:
         self._was_in_test = False
         self._awaiting_release = False
+        self._on_sequence_exit = on_sequence_exit
 
     def observe_state(self, current_state: str) -> None:
         in_test = current_state.startswith(_PREFIX)
@@ -33,6 +34,8 @@ class TestRemoteGuard:
         exit_pressed = in_test and _EXIT in events
         if exit_pressed:
             self._awaiting_release = True
+            if self._on_sequence_exit is not None:
+                self._on_sequence_exit(current_state)
 
         if self._awaiting_release:
             neutral = all(
