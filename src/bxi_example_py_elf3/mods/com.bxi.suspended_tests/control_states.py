@@ -79,6 +79,8 @@ class SuspendedState(RobotControlState):
         self.stop_started_at = 0.0
         self.stop_from = JOINT_NOMINAL_POS.copy()
         self.last_command = JOINT_NOMINAL_POS.copy()
+        self.command_limit_slack_rad = 0.0
+        self._warned_limit_joints = set()
 
     def is_available(self, ctx):
         return self.session.ready and not self.session.faulted
@@ -91,14 +93,58 @@ class SuspendedState(RobotControlState):
 
     def _command(self, ctx, position, kp=JOINT_KP, kd=JOINT_KD):
         position = np.asarray(position, dtype=np.float64)
-        if (
-            position.shape != JOINT_NOMINAL_POS.shape
-            or not np.all(np.isfinite(position))
-            or np.any(position < JOINT_POSITION_MIN + JOINT_MARGIN_RAD)
-            or np.any(position > JOINT_POSITION_MAX - JOINT_MARGIN_RAD)
-        ):
-            self._fault(ctx, "command exceeds finite software joint limits")
+        if position.shape != JOINT_NOMINAL_POS.shape or not np.all(np.isfinite(position)):
+            self._fault(ctx, "command has invalid joint count or non-finite position")
             return
+        original_min = JOINT_POSITION_MIN + JOINT_MARGIN_RAD
+        original_max = JOINT_POSITION_MAX - JOINT_MARGIN_RAD
+        below = np.maximum(original_min - position, 0.0)
+        above = np.maximum(position - original_max, 0.0)
+        over = below + above
+        exceeded = np.flatnonzero(over > 0.0)
+        if np.any(over > self.command_limit_slack_rad):
+            details = "; ".join(
+                "%s target=%.2f deg, original=[%.2f, %.2f] deg, over=%.2f deg (%s, %s)"
+                % (
+                    JOINT_NAMES[index],
+                    math.degrees(position[index]),
+                    math.degrees(original_min[index]),
+                    math.degrees(original_max[index]),
+                    math.degrees(over[index]),
+                    "below min" if below[index] else "above max",
+                    "fault" if over[index] > self.command_limit_slack_rad else "within allowance",
+                )
+                for index in exceeded
+            )
+            self._fault(
+                ctx,
+                "command exceeds software joint limits by more than %.2f deg: %s"
+                % (math.degrees(self.command_limit_slack_rad), details),
+            )
+            return
+        newly_exceeded = [
+            int(index) for index in exceeded
+            if index not in self._warned_limit_joints
+        ]
+        if newly_exceeded:
+            self._warned_limit_joints.update(newly_exceeded)
+            self.logger.warning(
+                "command outside original software limits (within %.2f deg allowance): %s"
+                % (
+                    math.degrees(self.command_limit_slack_rad),
+                    "; ".join(
+                        "%s target=%.2f deg, original=[%.2f, %.2f] deg, over=%.2f deg"
+                        % (
+                            JOINT_NAMES[index],
+                            math.degrees(position[index]),
+                            math.degrees(original_min[index]),
+                            math.degrees(original_max[index]),
+                            math.degrees(over[index]),
+                        )
+                        for index in newly_exceeded
+                    ),
+                )
+            )
         self.last_command[:] = position
         self._apply_frame(
             ctx, self._motor_frame(ctx, position, kp, kd, layout=TEST_LAYOUT)
@@ -144,6 +190,7 @@ class SuspendedIdleState(SuspendedState):
     def __init__(
         self, name, state_id, session, *, prepare_sec=3.0,
         prepare_kp_scale=1.1, center_kd_scale=1.05,
+        command_limit_slack_deg=10.0,
     ):
         super().__init__(name, state_id, session)
         if not math.isfinite(prepare_sec) or not 3.0 <= prepare_sec <= 20.0:
@@ -152,9 +199,12 @@ class SuspendedIdleState(SuspendedState):
             raise ValueError("test idle prepare_kp_scale must be in [0.5, 1.2]")
         if not math.isfinite(center_kd_scale) or not 0.5 <= center_kd_scale <= 1.2:
             raise ValueError("test idle center_kd_scale must be in [0.5, 1.2]")
+        if not math.isfinite(command_limit_slack_deg) or not 0.0 <= command_limit_slack_deg <= 10.0:
+            raise ValueError("test idle command_limit_slack_deg must be in [0, 10]")
         self.prepare_sec = float(prepare_sec)
         self.prepare_kp_scale = float(prepare_kp_scale)
         self.center_kd_scale = float(center_kd_scale)
+        self.command_limit_slack_rad = math.radians(command_limit_slack_deg)
         session.center_kp_scale = self.prepare_kp_scale
         session.center_kd_scale = self.center_kd_scale
         self.from_test = False

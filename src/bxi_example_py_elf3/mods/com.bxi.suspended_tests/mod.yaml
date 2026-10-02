@@ -27,7 +27,7 @@ states:
   idle:
     manifest: {label: 悬挂测试待机, priority: 910, group: Tests}
     inference_hz: 200.0
-    params: {prepare_sec: 3.0, prepare_kp_scale: 1.1, center_kd_scale: 1.05}
+    params: {prepare_sec: 3.0, prepare_kp_scale: 1.1, center_kd_scale: 1.05, command_limit_slack_deg: 10.0}
   running:
     manifest: {label: 悬挂跑动轨迹, priority: 900, group: Tests}
     inference_hz: 200.0

@@ -20,6 +20,7 @@ def create_mod(context: ModLoadContext) -> ModDefinition:
                 prepare_sec=state.float_param("prepare_sec", 3.0),
                 prepare_kp_scale=state.float_param("prepare_kp_scale", 1.1),
                 center_kd_scale=state.float_param("center_kd_scale", 1.05),
+                command_limit_slack_deg=state.float_param("command_limit_slack_deg", 10.0),
             ),
             "running": lambda state: SuspendedRunningState(
                 state.name, state.state_id, session

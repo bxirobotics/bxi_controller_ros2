@@ -24,7 +24,10 @@
 0 增至 `JOINT_KP × 1.10`，KD 为 `JOINT_KD × 1.05`。停止 X/Y/A 后的回中位
 及待机保持中位也使用这组增益；X/Y/A 正常执行动作时仍使用原始 `JOINT_KP/KD`。
 本目录 `mod.yaml` 的 `idle.params` 可设置 `prepare_sec`（3–20 秒）、
-`prepare_kp_scale` 和 `center_kd_scale`（均限制在 0.5–1.2 倍）。反馈角度
+`prepare_kp_scale` 和 `center_kd_scale`（均限制在 0.5–1.2 倍）。
+`command_limit_slack_deg` 默认允许测试待机回中位命令在原软件关节限位（两端各留
+0.02 rad 余量）外最多再超出 10°；日志仍以原限位报告关节、目标角度及超出度数。
+X/Y/A 动作命令仍使用原限位；此配置不会改变硬件驱动保护。反馈角度
 5° 的保护门槛及超时均未放宽。确认电机通信和悬挂安全后再逐步调整，
 不能用更高增益掩盖 `motor_timeout`。
 反馈角度进入

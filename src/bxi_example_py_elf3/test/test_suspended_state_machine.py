@@ -17,6 +17,8 @@ from bxi_example_py_elf3.control.elf3 import (
     JOINT_KP,
     JOINT_NAMES,
     JOINT_NOMINAL_POS,
+    JOINT_POSITION_MAX,
+    JOINT_POSITION_MIN,
 )
 from bxi_example_py_elf3.framework.joints import JointLayout
 from bxi_example_py_elf3.framework.platform.runtime import RobotControlRuntime
@@ -37,14 +39,18 @@ _SPEC.loader.exec_module(_STATES)
 
 
 class _Logger:
+    def __init__(self):
+        self.warnings = []
+        self.errors = []
+
     def info(self, message):
         pass
 
     def warning(self, message):
-        pass
+        self.warnings.append(message)
 
     def error(self, message):
-        pass
+        self.errors.append(message)
 
 
 class _Context:
@@ -129,9 +135,88 @@ def test_idle_preparation_rejects_unsafe_parameters():
         {"prepare_kp_scale": float("inf")},
         {"center_kd_scale": 1.3},
         {"center_kd_scale": float("nan")},
+        {"command_limit_slack_deg": -1.0},
+        {"command_limit_slack_deg": 10.1},
+        {"command_limit_slack_deg": float("inf")},
     ):
         with pytest.raises(ValueError):
             _STATES.SuspendedIdleState("idle", 1, _STATES.TestSession(), **params)
+
+
+def test_limit_allowance_warns_once_and_keeps_original_range():
+    session = _STATES.TestSession()
+    state = _bind(_STATES.SuspendedIdleState("idle", 1, session))
+    ctx = _Context()
+    target = JOINT_NOMINAL_POS.copy()
+    target[0] = JOINT_POSITION_MAX[0] - _STATES.JOINT_MARGIN_RAD + np.deg2rad(5.0)
+
+    state._command(ctx, target)
+    state._command(ctx, target)
+
+    assert not session.faulted
+    np.testing.assert_allclose(ctx.frame.qpos[0], target[0])
+    assert len(state.logger.warnings) == 1
+    assert "waist_y_joint" in state.logger.warnings[0]
+    assert "original=[" in state.logger.warnings[0]
+    assert "over=5.00 deg" in state.logger.warnings[0]
+
+
+def test_reentry_from_zero_torque_accepts_start_pose_within_allowance():
+    session = _STATES.TestSession()
+    idle = _bind(_STATES.SuspendedIdleState("idle", 1, session))
+    ctx = _Context()
+    ctx.robot_joints.position[0] = (
+        JOINT_POSITION_MAX[0] - _STATES.JOINT_MARGIN_RAD + np.deg2rad(5.0)
+    )
+
+    idle.on_prepare(ctx, SimpleNamespace(name="com.bxi.basic_actions/zero_torque"))
+    idle.on_enter(ctx)
+    idle.on_update(ctx, 0.005)
+
+    assert not session.faulted
+    assert ctx.requests == []
+    assert ctx.frame is not None
+    assert "waist_y_joint" in idle.logger.warnings[-1]
+
+
+def test_limit_fault_names_every_joint_and_reports_degrees_over_original():
+    session = _STATES.TestSession()
+    state = _bind(_STATES.SuspendedIdleState("idle", 1, session))
+    ctx = _Context()
+    target = JOINT_NOMINAL_POS.copy()
+    target[0] = JOINT_POSITION_MAX[0] - _STATES.JOINT_MARGIN_RAD + np.deg2rad(11.0)
+    target[1] = JOINT_POSITION_MIN[1] + _STATES.JOINT_MARGIN_RAD - np.deg2rad(12.0)
+    target[2] = JOINT_POSITION_MAX[2] - _STATES.JOINT_MARGIN_RAD + np.deg2rad(5.0)
+
+    state._command(ctx, target)
+
+    assert session.faulted
+    assert ctx.frame is None
+    assert ctx.requests == [(_STATES.ZERO_TORQUE, "test_safety_fault", True)]
+    message = state.logger.errors[0]
+    assert "waist_y_joint" in message and "over=11.00 deg (above max, fault)" in message
+    assert "waist_x_joint" in message and "over=12.00 deg (below min, fault)" in message
+    assert "waist_z_joint" in message and "over=5.00 deg (above max, within allowance)" in message
+    assert message.count("original=[") == 3
+
+
+def test_active_test_commands_keep_original_limit():
+    class ActiveState(_STATES.SuspendedState):
+        def on_update(self, ctx, dt):
+            pass
+
+    session = _STATES.TestSession()
+    state = _bind(ActiveState("running", 2, session))
+    ctx = _Context()
+    target = JOINT_NOMINAL_POS.copy()
+    target[0] = JOINT_POSITION_MAX[0] - _STATES.JOINT_MARGIN_RAD + np.deg2rad(1.0)
+
+    state._command(ctx, target)
+
+    assert session.faulted
+    assert ctx.frame is None
+    assert "waist_y_joint" in state.logger.errors[0]
+    assert "over=1.00 deg" in state.logger.errors[0]
 
 
 def test_full_range_requires_center_before_transition():
