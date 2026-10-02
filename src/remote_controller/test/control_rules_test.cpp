@@ -391,9 +391,19 @@ void test_start_buttons_select_distinct_imu_sources()
         [](const std::string &command) {
             return command.find("start_imu_if_owned.sh") != std::string::npos;
         }));
+    expect(std::any_of(original->second.begin(), original->second.end(),
+        [](const std::string &command) {
+            return command.find("/var/log/bxi_log/test_$(date +%Y-%m-%d_%H-%M-%S)_elf.log") !=
+                std::string::npos;
+        }));
     expect(std::any_of(hardware->second.begin(), hardware->second.end(),
         [](const std::string &command) {
             return command.find("example_demo_hw.launch.py enable_imu:=true") !=
+                std::string::npos;
+        }));
+    expect(std::any_of(hardware->second.begin(), hardware->second.end(),
+        [](const std::string &command) {
+            return command.find("/var/log/bxi_log/test_${stamp}_elf.log") !=
                 std::string::npos;
         }));
     expect(std::none_of(hardware->second.begin(), hardware->second.end(),

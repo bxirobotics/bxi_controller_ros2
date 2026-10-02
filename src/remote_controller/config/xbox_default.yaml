@@ -158,12 +158,12 @@ outputs:
 system:
   start:
     - "mkdir -p /var/log/bxi_log/imu"
-    - "ros2 launch bxi_example_py_elf3 example_demo_hw.launch.py enable_imu:=false > /var/log/bxi_log/$(date +%Y-%m-%d_%H-%M-%S)_elf.log 2>&1 &"
+    - "ros2 launch bxi_example_py_elf3 example_demo_hw.launch.py enable_imu:=false > /var/log/bxi_log/test_$(date +%Y-%m-%d_%H-%M-%S)_elf.log 2>&1 &"
     - "bash -c 'imu_log=/var/log/bxi_log/imu/imu_$(date +%Y-%m-%d_%H-%M-%S).log; exec \"$(ros2 pkg prefix remote_controller)/share/remote_controller/scripts/start_imu_if_owned.sh\" \"$imu_log\"' > /var/log/bxi_log/imu/guard_$(date +%Y-%m-%d_%H-%M-%S).log 2>&1 &"
     - "ros2 launch bxi_example_bms bms.launch.py > /var/log/bxi_log/bms_$(date +%Y-%m-%d_%H-%M-%S)_bms.log 2>&1 &"
   start_hardware:
     - "mkdir -p /var/log/bxi_log/imu"
-    - "bash -c 'stamp=$(date +%Y-%m-%d_%H-%M-%S); log=/var/log/bxi_log/${stamp}_elf.log; ln -s \"$log\" /var/log/bxi_log/imu/imu_${stamp}.log; exec ros2 launch bxi_example_py_elf3 example_demo_hw.launch.py enable_imu:=true > \"$log\" 2>&1' &"
+    - "bash -c 'stamp=$(date +%Y-%m-%d_%H-%M-%S); log=/var/log/bxi_log/test_${stamp}_elf.log; ln -s \"$log\" /var/log/bxi_log/imu/imu_${stamp}.log; exec ros2 launch bxi_example_py_elf3 example_demo_hw.launch.py enable_imu:=true > \"$log\" 2>&1' &"
     - "ros2 launch bxi_example_bms bms.launch.py > /var/log/bxi_log/bms_$(date +%Y-%m-%d_%H-%M-%S)_bms.log 2>&1 &"
   stop:
     - "pkill -SIGINT -f '[r]os2 launch bxi_example_py_elf3 example_demo_hw[.]launch[.]py|[h]ardware_elf3|[b]xi_example_py_elf3_demo|[/]start_imu_if_owned[.]sh|[/]imu_publisher_guard|[r]os2 launch bxi_imu imu[.]launch[.]py|[/]imu_node' || true"
