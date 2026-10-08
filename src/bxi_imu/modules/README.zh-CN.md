@@ -42,7 +42,10 @@ extern "C" bxi_imu::ImuBackend * bxi_imu_create_backend(
 imu_module:
   ros__parameters:
     driver: new_imu
-    port: /dev/ttyIMU_NEW_1
+    port: /dev/ttyIMU
+    fallback_ports:
+      - /dev/ttyIMU_NEW_1
+    priority: 2
     baudrate: 921600
     frame_id: imu_link
     imu_topic: /hardware/imu_data
@@ -57,12 +60,16 @@ imu_module:
     pressure_enabled: false
 ```
 
-启动文件自动扫描 `install/share/bxi_imu/modules/*/config.yaml`，并把模块加入候选列表。端口软链接末尾数字决定优先级：
+启动文件自动扫描 `install/share/bxi_imu/modules/*/config.yaml`，并把模块加入候选列表。
+先尝试所有配置在 `/dev/ttyIMU` 上的协议，按 `priority` 数字从小到大探测；
+同一厂商可通过 `fallback_ports` 在主端口失败后使用备用端口。主端口上的
+所有协议失败后才尝试备用端口。缺省 `priority` 为 0，缺省
+`fallback_ports` 为空列表。其他端口名称末尾数字用于排列备用端口：
 
 ```text
-/dev/ttyIMU       优先级 0
-/dev/ttyIMU_1     优先级 1
-/dev/ttyIMU_2     优先级 2
+/dev/ttyIMU       首选端口
+/dev/ttyIMU_1     备用端口 1
+/dev/ttyIMU_2     备用端口 2
 ```
 
 厂商库放在自己的 `lib/` 目录中。CMake 会自动收集模块目录内的 `.cpp` 和 `.c` 文件，生成对应的共享库，不需要修改公共 CMake 或工厂代码。
@@ -87,4 +94,3 @@ loaded IMU module 'new_imu' from .../libbxi_imu_new_imu.so
 ```text
 /hardware/imu_data
 ```
-

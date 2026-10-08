@@ -36,6 +36,8 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include "bxi_imu/imu_backend.hpp"
+#include "bxi_imu/probe.hpp"
+#include "bxi_imu/sample_freshness.hpp"
 
 namespace bxi_imu
 {
@@ -65,17 +67,36 @@ public:
     axis_mapping_ = declare_parameter<std::string>("axis_mapping", "identity");
     imu_frequency_hz_ = declare_parameter<double>("imu_frequency_hz", 200.0);
     imu_timeout_multiplier_ = declare_parameter<double>("imu_timeout_multiplier", 1.5);
+    imu_freshness_mode_ = declare_parameter<std::string>("imu_freshness_mode", "observe");
+    imu_freshness_lag_limit_ms_ = declare_parameter<double>("imu_freshness_lag_limit_ms", 100.0);
+    if (imu_freshness_mode_ != "observe" && imu_freshness_mode_ != "enforce") {
+      RCLCPP_WARN(get_logger(), "invalid imu_freshness_mode; using observe");
+      imu_freshness_mode_ = "observe";
+    }
+    if (!std::isfinite(imu_freshness_lag_limit_ms_) || imu_freshness_lag_limit_ms_ <= 0.0) {
+      RCLCPP_WARN(get_logger(), "invalid imu_freshness_lag_limit_ms; using 100 ms");
+      imu_freshness_lag_limit_ms_ = 100.0;
+    }
     imu_record_enabled_ = declare_parameter<bool>("imu_record_enabled", false);
     imu_record_enabled_override_ = declare_parameter<std::string>(
       "imu_record_enabled_override", "auto");
     imu_record_dir_ = declare_parameter<std::string>(
       "imu_record_dir", "/var/log/bxi_log/imu/data");
     imu_record_max_files_ = declare_parameter<int>("imu_record_max_files", 10);
+    probe_timeout_ms_ = declare_parameter<int>("probe_timeout_ms", 1200);
+    probe_min_frames_ = declare_parameter<int>("probe_min_frames", 3);
     imu_candidates_ = declare_parameter<std::vector<std::string>>(
       "imu_candidates",
       std::vector<std::string>{
         "hipnuc|/dev/ttyIMU|921600|identity|500.0|2.5",
+        "yesense|/dev/ttyIMU|921600|-y,x,z|200.0|2.5",
         "yesense|/dev/ttyIMU_YESENSE_1|921600|-y,x,z|200.0|2.5"});
+
+    if (probe_timeout_ms_ < 100 || probe_min_frames_ < 2) {
+      RCLCPP_ERROR(get_logger(), "invalid IMU probe settings: timeout_ms=%d min_frames=%d",
+        probe_timeout_ms_, probe_min_frames_);
+      return;
+    }
 
     if (!std::isfinite(quaternion_norm_tolerance_) ||
       quaternion_norm_tolerance_ < 0.0 || quaternion_norm_tolerance_ >= 1.0)
@@ -205,6 +226,7 @@ private:
     bool record_enabled{false};
     std::string record_dir;
     int record_max_files{10};
+    int priority{0};
   };
 
   static bool parse_candidate(const std::string & entry, CandidateConfig & candidate)
@@ -241,7 +263,7 @@ private:
     if (module_fields.empty()) {
       return true;
     }
-    if (module_fields.size() != 15) {
+    if (module_fields.size() != 15 && module_fields.size() != 16) {
       return false;
     }
     try {
@@ -274,6 +296,9 @@ private:
       candidate.quaternion_norm_tolerance = std::stod(module_fields[7]);
       candidate.record_dir = module_fields[13];
       candidate.record_max_files = std::stoi(module_fields[14]);
+      if (module_fields.size() == 16) {
+        candidate.priority = std::stoi(module_fields[15]);
+      }
       candidate.has_module_parameters = true;
     } catch (const std::exception &) {
       return false;
@@ -338,58 +363,101 @@ private:
 
   static int port_priority(const std::string & port)
   {
+    if (port == "/dev/ttyIMU") {
+      return 0;
+    }
     static const std::regex suffix("_([0-9]+)$");
     std::smatch match;
     if (!std::regex_search(port, match, suffix)) {
-      return 0;
+      return 1;
     }
     try {
       return std::stoi(match[1].str()) + 1;
     } catch (const std::exception &) {
-      return 0;
+      return 1;
     }
   }
 
   void select_backend_from_candidates()
   {
-    std::vector<std::string> candidates = imu_candidates_;
-    std::stable_sort(candidates.begin(), candidates.end(), [](const std::string & left,
-      const std::string & right) {
-      const auto port_from_entry = [](const std::string & entry) {
-        CandidateConfig candidate;
-        return parse_candidate(entry, candidate) ? candidate.port : std::string{};
-      };
-      return port_priority(port_from_entry(left)) < port_priority(port_from_entry(right));
-    });
-
-    for (const auto & entry : candidates) {
-      CandidateConfig candidate_config;
-      if (!parse_candidate(entry, candidate_config))
-      {
+    std::vector<CandidateConfig> candidates;
+    for (const auto & entry : imu_candidates_) {
+      CandidateConfig candidate;
+      if (!parse_candidate(entry, candidate)) {
         RCLCPP_WARN(get_logger(), "ignoring malformed imu_candidates entry '%s'", entry.c_str());
         continue;
       }
+      candidates.push_back(std::move(candidate));
+    }
+    std::stable_sort(candidates.begin(), candidates.end(), [](const CandidateConfig & a,
+      const CandidateConfig & b) {
+      const int a_port = port_priority(a.port);
+      const int b_port = port_priority(b.port);
+      return a_port != b_port ? a_port < b_port : a.priority < b.priority;
+    });
+
+    int attempted = 0;
+    for (const auto & candidate_config : candidates) {
+      if ((driver_ != "auto" && driver_ != candidate_config.driver) ||
+        (port_ != "auto" && port_ != candidate_config.port))
+      {
+        continue;
+      }
+
+      ++attempted;
+      RCLCPP_INFO(get_logger(),
+        "probing IMU driver=%s port=%s priority=%d timeout=%dms required_frames=%d",
+        candidate_config.driver.c_str(), candidate_config.port.c_str(),
+        candidate_config.priority, probe_timeout_ms_, probe_min_frames_);
 
       try {
         auto candidate = create_backend(
           candidate_config.driver, candidate_config.port, candidate_config.baudrate, get_logger());
-        if (candidate && candidate->open()) {
-          driver_ = candidate_config.driver;
-          port_ = candidate_config.port;
-          baudrate_ = candidate_config.baudrate;
-          apply_candidate_config(candidate_config);
-          backend_ = std::move(candidate);
-          RCLCPP_INFO(
-            get_logger(), "selected IMU candidate driver=%s port=%s baudrate=%d",
-            driver_.c_str(), port_.c_str(), baudrate_);
-          return;
+        if (!candidate) {
+          RCLCPP_WARN(get_logger(), "IMU probe failed: driver=%s port=%s reason=module_unavailable",
+            candidate_config.driver.c_str(), candidate_config.port.c_str());
+          continue;
         }
+        if (!candidate->open()) {
+          RCLCPP_WARN(get_logger(), "IMU probe failed: driver=%s port=%s reason=open_failed",
+            candidate_config.driver.c_str(), candidate_config.port.c_str());
+          continue;
+        }
+        const double tolerance = candidate_config.has_module_parameters &&
+          std::isfinite(candidate_config.quaternion_norm_tolerance) &&
+          candidate_config.quaternion_norm_tolerance >= 0.0 &&
+          candidate_config.quaternion_norm_tolerance < 1.0 ?
+          candidate_config.quaternion_norm_tolerance : 0.1;
+        const auto result = probe_backend(
+          *candidate, std::chrono::milliseconds(probe_timeout_ms_), probe_min_frames_, tolerance);
+        if (!result.matched) {
+          RCLCPP_WARN(get_logger(),
+            "IMU probe failed: driver=%s port=%s reason=%s valid_frames=%d invalid_frames=%d",
+            candidate_config.driver.c_str(), candidate_config.port.c_str(),
+            result.device_lost ? "device_lost" :
+            result.valid_frames == 0 ? "no_valid_protocol_frames_or_no_data" :
+            "insufficient_consecutive_valid_frames",
+            result.valid_frames, result.invalid_frames);
+          candidate->close();
+          continue;
+        }
+        driver_ = candidate_config.driver;
+        port_ = candidate_config.port;
+        baudrate_ = candidate_config.baudrate;
+        apply_candidate_config(candidate_config);
+        backend_ = std::move(candidate);
+        RCLCPP_INFO(get_logger(),
+          "selected IMU driver=%s port=%s baudrate=%d after %d valid probe frames",
+          driver_.c_str(), port_.c_str(), baudrate_, result.valid_frames);
+        return;
       } catch (const std::exception & error) {
-        RCLCPP_WARN(
-          get_logger(), "ignoring imu_candidates entry '%s': %s", entry.c_str(), error.what());
+        RCLCPP_WARN(get_logger(), "IMU probe failed: driver=%s port=%s reason=exception: %s",
+          candidate_config.driver.c_str(), candidate_config.port.c_str(), error.what());
       }
     }
-    RCLCPP_ERROR(get_logger(), "no usable IMU candidate found in imu_candidates");
+    RCLCPP_ERROR(get_logger(),
+      "IMU startup stopped: no candidate produced %d consecutive valid frames "
+      "(attempted=%d); see each probe failure above", probe_min_frames_, attempted);
   }
 
   void read_loop()
@@ -412,11 +480,49 @@ private:
         }
         continue;
       }
-      check_imu_timeout(true);
       transform_sample_to_robot_frame(sample);
       const bool quaternion_valid = valid_quaternion(sample.imu.orientation);
+      const auto freshness = freshness_.observe(
+        sample.device_tick, sample.device_tick_period_us, sample.device_tick_modulus,
+        sample.device_tick_kind, std::chrono::steady_clock::now(),
+        imu_freshness_lag_limit_ms_);
+      const auto frame_freshness = frame_freshness_.observe(
+        sample.device_frame_id ?
+        std::optional<std::uint64_t>(*sample.device_frame_id) : std::nullopt,
+        0, std::uint64_t{1} << 16, 4, std::chrono::steady_clock::now(),
+        imu_freshness_lag_limit_ms_);
+      const bool suspicious = freshness.status == FreshnessStatus::repeated ||
+        freshness.status == FreshnessStatus::reversed ||
+        freshness.status == FreshnessStatus::lagging ||
+        frame_freshness.status == FreshnessStatus::repeated ||
+        frame_freshness.status == FreshnessStatus::reversed;
+      if (suspicious) {
+        ++suspicious_frame_count_;
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 5000,
+          "IMU device freshness: tick_status=%s frame_status=%s tick=%llu kind=%u "
+          "relative_lag=%.1f ms "
+          "(not absolute sample age), count=%llu mode=%s",
+          freshness_status_name(freshness.status), freshness_status_name(frame_freshness.status),
+          static_cast<unsigned long long>(sample.device_tick.value_or(0)),
+          static_cast<unsigned>(sample.device_tick_kind), freshness.relative_lag_ms,
+          static_cast<unsigned long long>(suspicious_frame_count_), imu_freshness_mode_.c_str());
+      }
+      // Unknown timestamp units are diagnostics only, even when enforcement is requested.
+      const bool freshness_rejected = imu_freshness_mode_ == "enforce" &&
+        sample.device_tick_period_us != 0 &&
+        (freshness.status == FreshnessStatus::repeated ||
+        freshness.status == FreshnessStatus::reversed ||
+        freshness.status == FreshnessStatus::lagging);
       record_sample(
-        sample, quaternion_valid, quaternion_valid ? "" : "invalid_quaternion");
+        sample, freshness, frame_freshness, quaternion_valid,
+        !quaternion_valid ? "invalid_quaternion" :
+        (freshness_rejected ? "device_freshness" : ""));
+      if (freshness_rejected) {
+        check_imu_timeout(false);
+        continue;
+      }
+      check_imu_timeout(true);
       if (!quaternion_valid) {
         ++invalid_quaternion_count_;
         const std::string dropped_count = std::to_string(invalid_quaternion_count_);
@@ -503,7 +609,10 @@ private:
   struct RecordedSample
   {
     ImuSample sample;
+    std::int64_t receive_time_ns{0};
     double arrival_gap_ms{0.0};
+    FreshnessResult freshness;
+    FreshnessResult frame_freshness;
     bool quaternion_valid{false};
     std::string drop_reason;
   };
@@ -538,7 +647,8 @@ private:
                  << "euler_roll,euler_pitch,euler_yaw,"
                  << "angular_velocity_x,angular_velocity_y,angular_velocity_z,"
                  << "linear_acceleration_x,linear_acceleration_y,linear_acceleration_z,"
-                 << "arrival_gap_ms\n";
+                 << "arrival_gap_ms,device_tick,device_tick_period_us,device_tick_kind,"
+                 << "device_frame_id,freshness_status,frame_status,relative_lag_ms\n";
     record_file_.flush();
     if (record_file_.fail()) {
       RCLCPP_WARN(get_logger(), "cannot write IMU record header; recording disabled");
@@ -574,12 +684,15 @@ private:
   }
 
   void record_sample(
-    const ImuSample & sample, bool quaternion_valid, const char * drop_reason)
+    const ImuSample & sample, FreshnessResult freshness, FreshnessResult frame_freshness,
+    bool quaternion_valid, const char * drop_reason)
   {
     if (!imu_record_enabled_ || !recording_running_) {
       return;
     }
     const auto now = std::chrono::steady_clock::now();
+    const auto receive_time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
     double arrival_gap_ms = 0.0;
     if (last_record_time_.has_value()) {
       arrival_gap_ms = std::chrono::duration<double, std::milli>(
@@ -587,22 +700,32 @@ private:
     }
     last_record_time_ = now;
 
+    bool queued = false;
     {
       std::lock_guard<std::mutex> lock(record_queue_mutex_);
       if (record_queue_.size() >= record_queue_capacity_) {
         ++dropped_record_count_;
-        return;
+      } else {
+        record_queue_.push_back(
+          RecordedSample{
+            sample, receive_time_ns, arrival_gap_ms, freshness, frame_freshness,
+            quaternion_valid, drop_reason});
+        queued = true;
+        max_record_queue_depth_ = std::max(max_record_queue_depth_, record_queue_.size());
       }
-      record_queue_.push_back(
-        RecordedSample{sample, arrival_gap_ms, quaternion_valid, drop_reason});
     }
-    record_queue_condition_.notify_one();
+    if (queued) {
+      record_queue_condition_.notify_one();
+    }
   }
 
   void record_writer_loop()
   {
     while (true) {
       RecordedSample recorded_sample;
+      std::size_t queue_depth = 0;
+      std::size_t peak_depth = 0;
+      std::uint64_t dropped_rows = 0;
       {
         std::unique_lock<std::mutex> lock(record_queue_mutex_);
         record_queue_condition_.wait(lock, [this]() {
@@ -613,8 +736,25 @@ private:
         }
         recorded_sample = std::move(record_queue_.front());
         record_queue_.pop_front();
+        queue_depth = record_queue_.size();
+        peak_depth = max_record_queue_depth_;
+        dropped_rows = dropped_record_count_;
       }
       write_recorded_sample(recorded_sample);
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= next_record_stats_at_) {
+        RCLCPP_INFO(get_logger(),
+          "IMU CSV queue: depth=%zu/%zu peak=%zu dropped_rows=%llu",
+          queue_depth, record_queue_capacity_, peak_depth,
+          static_cast<unsigned long long>(dropped_rows));
+        next_record_stats_at_ = now + std::chrono::seconds(30);
+      }
+      if (queue_depth >= record_queue_capacity_ * 3 / 4 && now >= next_record_warning_at_) {
+        RCLCPP_WARN(get_logger(),
+          "IMU CSV queue backlog: depth=%zu/%zu dropped_rows=%llu; IMU publishing continues",
+          queue_depth, record_queue_capacity_, static_cast<unsigned long long>(dropped_rows));
+        next_record_warning_at_ = now + std::chrono::seconds(5);
+      }
     }
   }
 
@@ -627,8 +767,7 @@ private:
     const double norm = quaternion_norm(message.orientation);
     std::ostringstream row;
     row << std::setprecision(12)
-        << std::chrono::duration_cast<std::chrono::nanoseconds>(
-          std::chrono::system_clock::now().time_since_epoch()).count() << ","
+        << recorded_sample.receive_time_ns << ","
         << message.header.stamp.sec << "," << message.header.stamp.nanosec << ","
         << (recorded_sample.quaternion_valid ? 1 : 0) << ","
         << recorded_sample.drop_reason << ","
@@ -640,7 +779,18 @@ private:
         << message.angular_velocity.x << "," << message.angular_velocity.y << ","
         << message.angular_velocity.z << "," << message.linear_acceleration.x << ","
         << message.linear_acceleration.y << "," << message.linear_acceleration.z << ","
-        << recorded_sample.arrival_gap_ms << "\n";
+        << recorded_sample.arrival_gap_ms << ",";
+    if (recorded_sample.sample.device_tick) {
+      row << *recorded_sample.sample.device_tick;
+    }
+    row << "," << recorded_sample.sample.device_tick_period_us << ","
+        << static_cast<unsigned>(recorded_sample.sample.device_tick_kind) << ",";
+    if (recorded_sample.sample.device_frame_id) {
+      row << *recorded_sample.sample.device_frame_id;
+    }
+    row << "," << freshness_status_name(recorded_sample.freshness.status) << ","
+        << freshness_status_name(recorded_sample.frame_freshness.status) << ","
+        << recorded_sample.freshness.relative_lag_ms << "\n";
     const std::string content = row.str();
     record_file_ << content;
     if (record_file_.fail()) {
@@ -666,8 +816,13 @@ private:
       recording_running_ = false;
     }
     record_queue_condition_.notify_one();
-    if (record_writer_thread_.joinable()) {
+    const bool writer_started = record_writer_thread_.joinable();
+    if (writer_started) {
       record_writer_thread_.join();
+    }
+    if (writer_started) {
+      RCLCPP_INFO(get_logger(), "IMU CSV recording stopped: peak_queue_depth=%zu dropped_rows=%llu",
+        max_record_queue_depth_, static_cast<unsigned long long>(dropped_record_count_));
     }
     if (record_file_.is_open()) {
       record_file_.flush();
@@ -954,6 +1109,11 @@ private:
   std::string axis_mapping_;
   double imu_frequency_hz_{200.0};
   double imu_timeout_multiplier_{1.5};
+  std::string imu_freshness_mode_{"observe"};
+  double imu_freshness_lag_limit_ms_{100.0};
+  SampleFreshness freshness_;
+  SampleFreshness frame_freshness_;
+  std::uint64_t suspicious_frame_count_{0};
   bool imu_record_enabled_{false};
   std::string imu_record_enabled_override_{"auto"};
   std::string imu_record_dir_{"/var/log/bxi_log/imu/data"};
@@ -975,6 +1135,8 @@ private:
   std::string record_file_prefix_;
   std::filesystem::path current_record_path_;
   int record_file_index_{0};
+  int probe_timeout_ms_{1200};
+  int probe_min_frames_{3};
   std::uint64_t recorded_rows_since_flush_{0};
   std::optional<std::chrono::steady_clock::time_point> last_record_time_;
   static constexpr std::size_t record_queue_capacity_{2000};
@@ -983,6 +1145,9 @@ private:
   std::condition_variable record_queue_condition_;
   std::atomic<bool> recording_running_{false};
   std::uint64_t dropped_record_count_{0};
+  std::size_t max_record_queue_depth_{0};
+  std::chrono::steady_clock::time_point next_record_stats_at_{};
+  std::chrono::steady_clock::time_point next_record_warning_at_{};
   std::thread record_writer_thread_;
 
   BackendPtr backend_;

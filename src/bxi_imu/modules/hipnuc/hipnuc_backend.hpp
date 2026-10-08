@@ -22,6 +22,10 @@
 
 #include "bxi_imu/imu_backend.hpp"
 
+extern "C" {
+#include "hipnuc_dec.h"
+}
+
 namespace bxi_imu
 {
 
@@ -50,6 +54,7 @@ private:
   rclcpp::Logger logger_;
   int fd_{-1};
   std::atomic<bool> opened_{false};
+  hipnuc_raw_t raw_{};
 };
 
 }  // namespace bxi_imu

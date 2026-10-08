@@ -26,10 +26,6 @@
 
 #include <asm/termbits.h>
 
-extern "C" {
-#include "hipnuc_dec.h"
-}
-
 namespace bxi_imu
 {
 namespace
@@ -38,6 +34,7 @@ constexpr double kDegreesToRadians = 0.017453292519943295;
 constexpr double kG = 9.8;
 constexpr double kMicroTeslaToTesla = 1.0e-6;
 constexpr std::size_t kBufferSize = 1024;
+constexpr std::size_t kMaxDrainBytes = 64 * 1024;
 }
 
 HipnucBackend::HipnucBackend(
@@ -62,6 +59,7 @@ bool HipnucBackend::open()
   if (fd_ < 0) {
     return false;
   }
+  raw_ = hipnuc_raw_t{};
   opened_ = true;
   RCLCPP_INFO(logger_, "opened %s IMU on %s at %d baud", name().c_str(), port_.c_str(), baudrate_);
   return true;
@@ -107,105 +105,145 @@ bool HipnucBackend::read(ImuSample & sample)
     return false;
   }
 
-  uint8_t buffer[kBufferSize]{};
-  const ssize_t count = ::read(fd_, buffer, sizeof(buffer));
-  if (count < 0) {
-    if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR && opened_) {
+  bool found = false;
+  std::size_t drained_bytes = 0;
+  std::size_t complete_frames = 0;
+  for (;;) {
+    uint8_t buffer[kBufferSize]{};
+    const ssize_t count = ::read(fd_, buffer, sizeof(buffer));
+    if (count < 0) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        if (complete_frames > 1) {
+          static rclcpp::Clock steady_clock(RCL_STEADY_TIME);
+          RCLCPP_WARN_THROTTLE(
+            logger_, steady_clock, 5000,
+            "coalesced %zu HiPNUC IMU frames in one serial read cycle; using the newest",
+            complete_frames);
+        }
+        return found;
+      }
+      if (errno == EINTR) {
+        continue;
+      }
       RCLCPP_ERROR(logger_, "read(%s) failed: %s", port_.c_str(), std::strerror(errno));
       opened_ = false;
+      return false;
     }
-    return false;
-  }
-  if (count == 0) {
-    if (opened_) {
+    if (count == 0) {
       RCLCPP_ERROR(logger_, "serial port %s returned EOF", port_.c_str());
+      opened_ = false;
+      return false;
     }
-    opened_ = false;
-    return false;
-  }
 
-  for (ssize_t index = 0; index < count; ++index) {
-    if (decode_byte(buffer[index], sample)) {
-      return true;
+    drained_bytes += static_cast<std::size_t>(count);
+    for (ssize_t index = 0; index < count; ++index) {
+      if (decode_byte(buffer[index], sample)) {
+        found = true;
+        ++complete_frames;
+      }
+    }
+
+    if (drained_bytes >= kMaxDrainBytes) {
+      int queued_bytes = 0;
+      if (ioctl(fd_, FIONREAD, &queued_bytes) != 0 || queued_bytes > 0) {
+        RCLCPP_ERROR(logger_,
+          "HiPNUC serial backlog exceeded %zu bytes; discarding queued IMU data",
+          kMaxDrainBytes);
+        if (ioctl(fd_, TCIFLUSH, 0) != 0) {
+          RCLCPP_ERROR(logger_, "cannot flush stale HiPNUC data: %s", std::strerror(errno));
+          opened_ = false;
+        }
+        raw_ = hipnuc_raw_t{};
+        return false;
+      }
+      return found;
     }
   }
-  return false;
 }
 
 bool HipnucBackend::decode_byte(uint8_t byte, ImuSample & sample)
 {
-  static thread_local hipnuc_raw_t raw{};
-  const int result = hipnuc_input(&raw, byte);
+  const int result = hipnuc_input(&raw_, byte);
   // The decoder returns 1 only after a complete packet passes CRC and length checks.
   if (result <= 0) {
     return false;
   }
 
-  sample = ImuSample{};
-  if (raw.hi91.tag == 0x91) {
-    sample.imu.orientation.w = raw.hi91.quat[0];
-    sample.imu.orientation.x = raw.hi91.quat[1];
-    sample.imu.orientation.y = raw.hi91.quat[2];
-    sample.imu.orientation.z = raw.hi91.quat[3];
-    sample.imu.angular_velocity.x = raw.hi91.gyr[0] * kDegreesToRadians;
-    sample.imu.angular_velocity.y = raw.hi91.gyr[1] * kDegreesToRadians;
-    sample.imu.angular_velocity.z = raw.hi91.gyr[2] * kDegreesToRadians;
-    sample.imu.linear_acceleration.x = raw.hi91.acc[0] * kG;
-    sample.imu.linear_acceleration.y = raw.hi91.acc[1] * kG;
-    sample.imu.linear_acceleration.z = raw.hi91.acc[2] * kG;
-    sample.magnetic.magnetic_field.x = raw.hi91.mag[0] * kMicroTeslaToTesla;
-    sample.magnetic.magnetic_field.y = raw.hi91.mag[1] * kMicroTeslaToTesla;
-    sample.magnetic.magnetic_field.z = raw.hi91.mag[2] * kMicroTeslaToTesla;
-    sample.euler.vector.x = raw.hi91.roll * kDegreesToRadians;
-    sample.euler.vector.y = raw.hi91.pitch * kDegreesToRadians;
-    sample.euler.vector.z = raw.hi91.yaw * kDegreesToRadians;
-    sample.temperature.temperature = raw.hi91.temp;
-    sample.pressure.fluid_pressure = raw.hi91.air_pressure;
+  if (raw_.hi91.tag == 0x91) {
+    sample = ImuSample{};
+    sample.imu.orientation.w = raw_.hi91.quat[0];
+    sample.imu.orientation.x = raw_.hi91.quat[1];
+    sample.imu.orientation.y = raw_.hi91.quat[2];
+    sample.imu.orientation.z = raw_.hi91.quat[3];
+    sample.imu.angular_velocity.x = raw_.hi91.gyr[0] * kDegreesToRadians;
+    sample.imu.angular_velocity.y = raw_.hi91.gyr[1] * kDegreesToRadians;
+    sample.imu.angular_velocity.z = raw_.hi91.gyr[2] * kDegreesToRadians;
+    sample.imu.linear_acceleration.x = raw_.hi91.acc[0] * kG;
+    sample.imu.linear_acceleration.y = raw_.hi91.acc[1] * kG;
+    sample.imu.linear_acceleration.z = raw_.hi91.acc[2] * kG;
+    sample.magnetic.magnetic_field.x = raw_.hi91.mag[0] * kMicroTeslaToTesla;
+    sample.magnetic.magnetic_field.y = raw_.hi91.mag[1] * kMicroTeslaToTesla;
+    sample.magnetic.magnetic_field.z = raw_.hi91.mag[2] * kMicroTeslaToTesla;
+    sample.euler.vector.x = raw_.hi91.roll * kDegreesToRadians;
+    sample.euler.vector.y = raw_.hi91.pitch * kDegreesToRadians;
+    sample.euler.vector.z = raw_.hi91.yaw * kDegreesToRadians;
+    sample.temperature.temperature = raw_.hi91.temp;
+    sample.pressure.fluid_pressure = raw_.hi91.air_pressure;
     sample.has_euler = true;
     sample.has_magnetic = true;
     sample.has_temperature = true;
     sample.has_pressure = true;
+    sample.device_tick = static_cast<std::uint64_t>(raw_.hi91.system_time);
+    sample.device_tick_period_us = 1000;
+    sample.device_tick_modulus = std::uint64_t{1} << 32;
+    sample.device_tick_kind = 1;
     set_now(sample);
     return true;
   }
 
-  if (raw.hi83.tag == 0x83) {
-    const uint32_t bitmap = raw.hi83.data_bitmap;
+  if (raw_.hi83.tag == 0x83) {
+    sample = ImuSample{};
+    const uint32_t bitmap = raw_.hi83.data_bitmap;
     if (bitmap & HI83_BMAP_QUAT) {
-      sample.imu.orientation.w = raw.hi83.quat[0];
-      sample.imu.orientation.x = raw.hi83.quat[1];
-      sample.imu.orientation.y = raw.hi83.quat[2];
-      sample.imu.orientation.z = raw.hi83.quat[3];
+      sample.imu.orientation.w = raw_.hi83.quat[0];
+      sample.imu.orientation.x = raw_.hi83.quat[1];
+      sample.imu.orientation.y = raw_.hi83.quat[2];
+      sample.imu.orientation.z = raw_.hi83.quat[3];
     }
     if (bitmap & HI83_BMAP_GYR_B) {
-      sample.imu.angular_velocity.x = raw.hi83.gyr_b[0];
-      sample.imu.angular_velocity.y = raw.hi83.gyr_b[1];
-      sample.imu.angular_velocity.z = raw.hi83.gyr_b[2];
+      sample.imu.angular_velocity.x = raw_.hi83.gyr_b[0];
+      sample.imu.angular_velocity.y = raw_.hi83.gyr_b[1];
+      sample.imu.angular_velocity.z = raw_.hi83.gyr_b[2];
     }
     if (bitmap & HI83_BMAP_ACC_B) {
-      sample.imu.linear_acceleration.x = raw.hi83.acc_b[0];
-      sample.imu.linear_acceleration.y = raw.hi83.acc_b[1];
-      sample.imu.linear_acceleration.z = raw.hi83.acc_b[2];
+      sample.imu.linear_acceleration.x = raw_.hi83.acc_b[0];
+      sample.imu.linear_acceleration.y = raw_.hi83.acc_b[1];
+      sample.imu.linear_acceleration.z = raw_.hi83.acc_b[2];
     }
     if (bitmap & HI83_BMAP_MAG_B) {
-      sample.magnetic.magnetic_field.x = raw.hi83.mag_b[0] * kMicroTeslaToTesla;
-      sample.magnetic.magnetic_field.y = raw.hi83.mag_b[1] * kMicroTeslaToTesla;
-      sample.magnetic.magnetic_field.z = raw.hi83.mag_b[2] * kMicroTeslaToTesla;
+      sample.magnetic.magnetic_field.x = raw_.hi83.mag_b[0] * kMicroTeslaToTesla;
+      sample.magnetic.magnetic_field.y = raw_.hi83.mag_b[1] * kMicroTeslaToTesla;
+      sample.magnetic.magnetic_field.z = raw_.hi83.mag_b[2] * kMicroTeslaToTesla;
       sample.has_magnetic = true;
     }
     if (bitmap & HI83_BMAP_RPY) {
-      sample.euler.vector.x = raw.hi83.rpy[0] * kDegreesToRadians;
-      sample.euler.vector.y = raw.hi83.rpy[1] * kDegreesToRadians;
-      sample.euler.vector.z = raw.hi83.rpy[2] * kDegreesToRadians;
+      sample.euler.vector.x = raw_.hi83.rpy[0] * kDegreesToRadians;
+      sample.euler.vector.y = raw_.hi83.rpy[1] * kDegreesToRadians;
+      sample.euler.vector.z = raw_.hi83.rpy[2] * kDegreesToRadians;
       sample.has_euler = true;
     }
     if (bitmap & HI83_BMAP_AIR_PRESSURE) {
-      sample.pressure.fluid_pressure = raw.hi83.air_pressure;
+      sample.pressure.fluid_pressure = raw_.hi83.air_pressure;
       sample.has_pressure = true;
     }
     if (bitmap & HI83_BMAP_TEMPERATURE) {
-      sample.temperature.temperature = raw.hi83.temperature;
+      sample.temperature.temperature = raw_.hi83.temperature;
       sample.has_temperature = true;
+    }
+    if (bitmap & HI83_BMAP_SYSTEM_TIME) {
+      sample.device_tick = static_cast<std::uint64_t>(raw_.hi83.system_time_us);
+      sample.device_tick_period_us = 1;
+      sample.device_tick_kind = 2;
     }
     set_now(sample);
     return true;

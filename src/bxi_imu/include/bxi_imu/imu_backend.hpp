@@ -14,7 +14,9 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include <geometry_msgs/msg/vector3_stamped.hpp>
@@ -48,6 +50,11 @@ struct ImuSample
   bool has_magnetic{false};
   bool has_temperature{false};
   bool has_pressure{false};
+  std::optional<std::uint64_t> device_tick;
+  std::uint32_t device_tick_period_us{0};
+  std::uint64_t device_tick_modulus{0};
+  std::uint8_t device_tick_kind{0};
+  std::optional<std::uint16_t> device_frame_id;
 };
 
 class ImuBackend
