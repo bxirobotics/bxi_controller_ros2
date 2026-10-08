@@ -37,6 +37,7 @@ from bxi_example_py_elf3.framework.joints import (
     NamedJointCommandOverride,
 )
 from bxi_example_py_elf3.framework.mod_api import MotorFrame
+from bxi_example_py_elf3.imu_freshness import ImuStampObserver
 from bxi_example_py_elf3.framework.platform import (
     NamedJointStateSource,
     RobotControlRuntime,
@@ -128,6 +129,9 @@ class BxiExample(Node):
         self._imu_first_received_logged = False
         self._imu_invalid_frame_count = 0
         self._next_imu_invalid_warning = 0.0
+        self._imu_stamp_observer = ImuStampObserver()
+        self._next_imu_stamp_warning = 0.0
+        self._imu_stamp_warning_count = 0
         self._imu_startup_started_at = None
         self._imu_startup_timeout_logged = False
         self._next_imu_startup_warning = 0.0
@@ -641,6 +645,22 @@ class BxiExample(Node):
         self.get_logger().warning(f"invalid motor override: {message}")
 
     def imu_callback(self, msg):
+        if self.imu_required:
+            stamp_status, stamp_age_ms = self._imu_stamp_observer.observe(msg.header.stamp)
+            if stamp_status != "fresh":
+                self._imu_stamp_warning_count += 1
+                now = time.monotonic()
+                if now >= self._next_imu_stamp_warning:
+                    self._next_imu_stamp_warning = now + 5.0
+                    self.get_logger().warning(
+                        "IMU ROS stamp diagnostic: status=%s transport_age=%s ms "
+                        "count=%d (observe only; device sample age unknown)"
+                        % (
+                            stamp_status,
+                            "n/a" if stamp_age_ms is None else f"{stamp_age_ms:.1f}",
+                            self._imu_stamp_warning_count,
+                        )
+                    )
         quat = msg.orientation
         avel = msg.angular_velocity
         acceleration = msg.linear_acceleration

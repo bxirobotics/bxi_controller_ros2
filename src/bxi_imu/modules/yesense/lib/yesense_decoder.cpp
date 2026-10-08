@@ -25,6 +25,12 @@ yesense_decoder::~yesense_decoder()
 	delete std_out_decoder;
 }
 
+void yesense_decoder::clear_buffer()
+{
+    decode_buf_len = 0u;
+    memset(decode_data, 0, DATA_BUF_SIZE);
+}
+
 int yesense_decoder::data_proc(unsigned char *data, unsigned int len, yis_out_data_t *result)
 {   
     int ret = analysis_ok;
@@ -119,7 +125,7 @@ int yesense_decoder::clear_buf_data(unsigned int st_idx, unsigned int end_idx)
     else if(cnt > 0)
     {
         decode_buf_len -= cnt;        
-        memcpy(decode_data + st_idx, decode_data + end_idx + 1u, decode_buf_len);    
+        memmove(decode_data + st_idx, decode_data + end_idx + 1u, decode_buf_len);
     }
 
     return analysis_ok;

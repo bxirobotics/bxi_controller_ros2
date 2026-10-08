@@ -2,6 +2,7 @@
 
 #include "yesense_backend.hpp"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
@@ -12,6 +13,8 @@
 
 #include <asm/termbits.h>
 
+#include "lib/yesense_decoder_comm.h"
+
 namespace bxi_imu
 {
 namespace
@@ -19,6 +22,8 @@ namespace
 constexpr double kDegreesToRadians = 0.017453292519943295;
 constexpr double kMicroTeslaToTesla = 1.0e-6;
 constexpr std::size_t kBufferSize = 4096;
+constexpr std::size_t kDecodeChunkSize = 512;
+constexpr std::size_t kMaxDrainBytes = 64 * 1024;
 }
 
 YesenseBackend::YesenseBackend(
@@ -82,57 +87,116 @@ bool YesenseBackend::read(ImuSample & sample)
     return false;
   }
 
-  uint8_t buffer[kBufferSize]{};
-  const ssize_t count = ::read(fd_, buffer, sizeof(buffer));
-  if (count < 0) {
-    if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR && opened_) {
+  bool found = false;
+  std::size_t drained_bytes = 0;
+  for (;;) {
+    uint8_t buffer[kBufferSize]{};
+    const ssize_t count = ::read(fd_, buffer, sizeof(buffer));
+    if (count < 0) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        return found;
+      }
+      if (errno == EINTR) {
+        continue;
+      }
       RCLCPP_ERROR(logger_, "read(%s) failed: %s", port_.c_str(), std::strerror(errno));
       opened_ = false;
+      return false;
     }
-    return false;
-  }
-  if (count == 0) {
-    RCLCPP_ERROR(logger_, "serial port %s returned EOF", port_.c_str());
-    opened_ = false;
-    return false;
-  }
+    if (count == 0) {
+      RCLCPP_ERROR(logger_, "serial port %s returned EOF", port_.c_str());
+      opened_ = false;
+      return false;
+    }
 
-  return decode(buffer, static_cast<std::size_t>(count), sample);
+    drained_bytes += static_cast<std::size_t>(count);
+    ImuSample latest;
+    if (decode(buffer, static_cast<std::size_t>(count), latest)) {
+      sample = std::move(latest);
+      found = true;
+    }
+    if (drained_bytes >= kMaxDrainBytes) {
+      int queued_bytes = 0;
+      if (ioctl(fd_, FIONREAD, &queued_bytes) != 0 || queued_bytes > 0) {
+        RCLCPP_ERROR(logger_,
+          "Yesense serial backlog exceeded %zu bytes; discarding queued IMU data",
+          kMaxDrainBytes);
+        if (ioctl(fd_, TCIFLUSH, 0) != 0) {
+          RCLCPP_ERROR(logger_, "cannot flush stale Yesense data: %s", std::strerror(errno));
+          opened_ = false;
+        }
+        decoder_.clear_buffer();
+        std::memset(&decoded_, 0, sizeof(decoded_));
+        return false;
+      }
+      return found;
+    }
+  }
 }
 
 bool YesenseBackend::decode(const uint8_t * data, std::size_t length, ImuSample & sample)
 {
-  decoder_.data_proc(const_cast<unsigned char *>(data), static_cast<unsigned int>(length), &decoded_);
-  if (!(decoded_.content.acc && decoded_.content.gyro && decoded_.content.quat)) {
-    return false;
+  bool found = false;
+  std::size_t complete_frames = 0;
+  for (std::size_t offset = 0; offset < length; offset += kDecodeChunkSize) {
+    const auto chunk_size = std::min(kDecodeChunkSize, length - offset);
+    int result = decoder_.data_proc(
+      const_cast<unsigned char *>(data + offset), static_cast<unsigned int>(chunk_size), &decoded_);
+    while (result == analysis_ok || result == crc_err) {
+      if (result == crc_err) {
+        std::memset(&decoded_, 0, sizeof(decoded_));
+      } else if (decoded_.content.valid_flg && decoded_.content.acc &&
+        decoded_.content.gyro && decoded_.content.quat)
+      {
+        sample = ImuSample{};
+        sample.imu.orientation.w = decoded_.quat.q0;
+        sample.imu.orientation.x = decoded_.quat.q1;
+        sample.imu.orientation.y = decoded_.quat.q2;
+        sample.imu.orientation.z = decoded_.quat.q3;
+        sample.imu.angular_velocity.x = decoded_.gyro.x * kDegreesToRadians;
+        sample.imu.angular_velocity.y = decoded_.gyro.y * kDegreesToRadians;
+        sample.imu.angular_velocity.z = decoded_.gyro.z * kDegreesToRadians;
+        sample.imu.linear_acceleration.x = decoded_.acc.x;
+        sample.imu.linear_acceleration.y = decoded_.acc.y;
+        sample.imu.linear_acceleration.z = decoded_.acc.z;
+        sample.magnetic.magnetic_field.x = decoded_.mag_norm.x * kMicroTeslaToTesla;
+        sample.magnetic.magnetic_field.y = decoded_.mag_norm.y * kMicroTeslaToTesla;
+        sample.magnetic.magnetic_field.z = decoded_.mag_norm.z * kMicroTeslaToTesla;
+        sample.euler.vector.x = decoded_.euler.roll * kDegreesToRadians;
+        sample.euler.vector.y = decoded_.euler.pitch * kDegreesToRadians;
+        sample.euler.vector.z = decoded_.euler.yaw * kDegreesToRadians;
+        sample.temperature.temperature = decoded_.sensor_temp;
+        sample.pressure.fluid_pressure = decoded_.pressure;
+        sample.has_euler = decoded_.content.euler != 0;
+        sample.has_magnetic = decoded_.content.mag_norm != 0;
+        sample.has_temperature = decoded_.content.sensor_temp != 0;
+        sample.has_pressure = decoded_.content.pressure != 0;
+        sample.device_frame_id = decoded_.tid;
+        if (decoded_.content.sample_timestamp) {
+          sample.device_tick = decoded_.sample_timestamp;
+          sample.device_tick_modulus = std::uint64_t{1} << 32;
+          sample.device_tick_kind = 3;
+        }
+        std::memset(&decoded_, 0, sizeof(decoded_));
+        found = true;
+        ++complete_frames;
+      }
+      decoded_.content.valid_flg = 0;
+      result = decoder_.data_proc(
+        const_cast<unsigned char *>(data + offset), 0u, &decoded_);
+    }
   }
-
-  sample = ImuSample{};
-  sample.imu.orientation.w = decoded_.quat.q0;
-  sample.imu.orientation.x = decoded_.quat.q1;
-  sample.imu.orientation.y = decoded_.quat.q2;
-  sample.imu.orientation.z = decoded_.quat.q3;
-  sample.imu.angular_velocity.x = decoded_.gyro.x * kDegreesToRadians;
-  sample.imu.angular_velocity.y = decoded_.gyro.y * kDegreesToRadians;
-  sample.imu.angular_velocity.z = decoded_.gyro.z * kDegreesToRadians;
-  sample.imu.linear_acceleration.x = decoded_.acc.x;
-  sample.imu.linear_acceleration.y = decoded_.acc.y;
-  sample.imu.linear_acceleration.z = decoded_.acc.z;
-  sample.magnetic.magnetic_field.x = decoded_.mag_norm.x * kMicroTeslaToTesla;
-  sample.magnetic.magnetic_field.y = decoded_.mag_norm.y * kMicroTeslaToTesla;
-  sample.magnetic.magnetic_field.z = decoded_.mag_norm.z * kMicroTeslaToTesla;
-  sample.euler.vector.x = decoded_.euler.roll * kDegreesToRadians;
-  sample.euler.vector.y = decoded_.euler.pitch * kDegreesToRadians;
-  sample.euler.vector.z = decoded_.euler.yaw * kDegreesToRadians;
-  sample.temperature.temperature = decoded_.sensor_temp;
-  sample.pressure.fluid_pressure = decoded_.pressure;
-  sample.has_euler = decoded_.content.euler != 0;
-  sample.has_magnetic = decoded_.content.mag_norm != 0;
-  sample.has_temperature = decoded_.content.sensor_temp != 0;
-  sample.has_pressure = decoded_.content.pressure != 0;
-  set_now(sample);
-  std::memset(&decoded_, 0, sizeof(decoded_));
-  return true;
+  if (found) {
+    set_now(sample);
+    if (complete_frames > 1) {
+      static rclcpp::Clock steady_clock(RCL_STEADY_TIME);
+      RCLCPP_WARN_THROTTLE(
+        logger_, steady_clock, 5000,
+        "coalesced %zu Yesense IMU frames in one serial read; using the newest",
+        complete_frames);
+    }
+  }
+  return found;
 }
 
 void YesenseBackend::set_now(ImuSample & sample) const
