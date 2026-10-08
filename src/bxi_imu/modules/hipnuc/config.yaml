@@ -1,9 +1,10 @@
 # HiPNUC module configuration.
-# The port name has no numeric suffix, so it has priority 0.
+# Probe this protocol first when multiple modules share /dev/ttyIMU.
 imu_module:
   ros__parameters:
     driver: hipnuc
     port: /dev/ttyIMU
+    priority: 0
     baudrate: 921600
     frame_id: imu_link
     imu_topic: /hardware/imu_data
