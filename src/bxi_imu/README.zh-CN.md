@@ -48,26 +48,31 @@ modules/
 每个 `modules/<名称>/config.yaml` 保存该 IMU 的驱动名称、设备软连接、
 波特率、输出话题和校验参数。现在已经删除公共的 IMU `config` 目录。
 
-## IMU 优先级
+## IMU 自动探测
 
-软连接名称末尾的数字表示优先级：
+每个厂商仍由自己的 `modules/<厂商>/config.yaml` 配置。`port` 是首选端口，
+`fallback_ports` 可列出备用端口；同一端口上的厂商按 `priority` 从小到大
+依次探测。探测要求在限定时间内连续收到 3 帧协议解析成功、四元数及运动
+数据有效的帧。未通过时会关闭串口，再尝试下一个候选，不会仅凭串口打开
+成功认定型号。
+
+当前顺序是：
 
 ```text
-/dev/ttyIMU                    优先级 0
-/dev/ttyIMU_YESENSE_1          优先级 1
-/dev/ttyIMU_YESENSE_2          优先级 2
+/dev/ttyIMU              -> hipnuc  (priority: 0)
+/dev/ttyIMU              -> yesense (priority: 1)
+/dev/ttyIMU_YESENSE_1    -> yesense (备用端口)
 ```
 
-数字越小，优先级越高。节点会按照优先级依次尝试独占打开串口。如果高
-优先级设备不存在、已经被占用或打开失败，就会尝试下一个设备。
+先完成所有 `/dev/ttyIMU` 的协议探测，再尝试其他端口；其他端口仍使用
+对应模块自己的协议。两个厂商当前均为 921600 波特率。无候选通过时节点
+打印逐项失败原因并以错误状态退出，不发布 IMU 数据。启动日志由遥控器的
+IMU guard 写入 `/var/log/bxi_log/imu/imu_*.log`。`no_valid_protocol_frames_or_no_data`
+表示指定时间内没有可解码帧，单凭这一条不能区分无串口数据与协议不匹配。
 
-当前配置为：
-
-```text
-hipnuc  -> /dev/ttyIMU             -> 921600 波特率
-yesense -> /dev/ttyIMU_YESENSE_1   -> 921600 波特率
-
-坐标轴可以在对应模块的 `config.yaml` 中配置。格式为目标坐标系的
+可用 `probe_timeout_ms`（默认 1200）及 `probe_min_frames`（默认 3）
+调整探测窗口和确认帧数。坐标轴可以在对应模块的 `config.yaml` 中配置，
+格式为目标坐标系的
 `x,y,z` 分量分别取设备的哪个轴，可加 `-` 表示取反，例如：
 
 ```yaml
@@ -75,9 +80,9 @@ axis_mapping: "-y,x,z"
 ```
 
 表示 `robot_x=-imu_y`、`robot_y=imu_x`、`robot_z=imu_z`。三个轴必须各使用一次，且必须构成右手坐标系。
-```
 
-udev 规则必须创建与配置一致的软连接。修改规则后执行：
+udev 规则必须创建与配置一致的软连接。备用别名不存在时会记录
+`open_failed`，不会影响已选中的主端口。修改规则后执行：
 
 ```bash
 sudo cp script/bxi-dev.rules /etc/udev/rules.d/bxi-dev.rules
@@ -154,6 +159,23 @@ imu_record_enabled: false
 ```text
 /var/log/bxi_log/imu/
 ```
+
+CSV 的 `receive_time_ns` 在读取线程入队时记录，而不是写盘线程处理时记录。
+CSV 还记录设备原始 `device_tick`、单位 `device_tick_period_us`、`device_frame_id`、
+`freshness_status`、`frame_status` 和 `relative_lag_ms`。状态有 `unknown`、`first`、
+`fresh`、`repeated`、`reversed`、`lagging`。`relative_lag_ms` 是最近两秒
+窗口内主机与设备时间增量的差值，**不是绝对采样年龄**。超核 HI91 使用毫秒，
+HI83 系统时间使用微秒；元生时间单位可能是微秒或 100 微秒，当前仅记录
+原始值及帧号；帧号重复/回退只告警，不用来计算延迟或自动拒收。
+
+默认 `imu_freshness_mode:=observe` 仅限频报告疑似重复、回退或相对滞后，
+不改变发布和机器人保护行为。只有实机核对设备计数规律后，才考虑显式
+使用 `imu_freshness_mode:=enforce`；该模式只对**已知单位**的设备 tick
+拒收异常帧，阈值由 `imu_freshness_lag_limit_ms` 控制（默认 100 ms）。
+控制端另行观察 ROS 消息头相对接收时刻的传输年龄；由于消息头在驱动
+解码时生成，无法据此发现解码前的串口积压，且观察结果不会触发卸力。
+节点每 30 秒输出日志队列的当前深度、峰值和累计丢行数；队列达到
+75% 容量时每 5 秒最多警告一次。队列满时只丢 CSV 行，不影响 IMU 话题发布。
 
 查看当前使用的设备和话题发布者：
 
