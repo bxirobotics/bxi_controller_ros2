@@ -67,12 +67,12 @@ example, `"-y,x,z"` means `robot_x=-imu_y`, `robot_y=imu_x`, and
 right-handed rotation.
 ```
 
-The udev rules must create the same aliases:
+The udev rules must create the same aliases. Back up and move any old `bxi-dev.rules` out of `/etc/udev/rules.d/` before installing:
 
 ```bash
-sudo cp script/bxi-dev.rules /etc/udev/rules.d/bxi-dev.rules
+sudo install -m 0644 script/udev/70-bxi-imu.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules
-sudo udevadm trigger
+sudo udevadm trigger --subsystem-match=tty --action=add
 ls -l /dev/ttyIMU*
 ```
 

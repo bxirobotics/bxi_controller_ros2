@@ -66,13 +66,16 @@ USD 或 XML 格式请参考：[unofficial models](https://github.com/MelodyAI/Ti
 sudo install -m 0755 ./script/bxi-battle-dragon-link /usr/local/bin/bxi-battle-dragon-link
 ```
 
-4. 复制 udev 规则，并重新加载规则：
+4. 安装 IMU、BAT 和遥控器三份 udev 规则，并重新加载。若已安装旧版 `/etc/udev/rules.d/bxi-dev.rules`，请先备份并移出该目录，避免与新规则同时生效：
 
 ```bash
-sudo cp ./script/bxi-dev.rules /etc/udev/rules.d/
+sudo install -m 0644 ./script/udev/70-bxi-*.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules
-sudo udevadm trigger
+sudo udevadm trigger --subsystem-match=tty --action=add
+sudo udevadm trigger --subsystem-match=input --action=add
 ```
+
+规则按 `uname -m` 区分 `x86_64` 与 `aarch64`，分别使用 `3-8`/`3-9` 与 `4-1.7`/`5-1`。IMU 和 BAT 在各自架构的两个端口都可匹配，设备类型由 USB VID/PID 区分。
 
 重新插拔 Battle Dragon 手柄后，应能看到 `/dev/input/jsBattleDragon`。如果只是本地调试，也可以临时将 `src/remote_controller/config/xbox_default.yaml` 中的 `sources.gamepad.device` 改成当前系统对应的 `/dev/input/js0`。
 

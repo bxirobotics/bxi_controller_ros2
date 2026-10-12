@@ -82,12 +82,12 @@ axis_mapping: "-y,x,z"
 表示 `robot_x=-imu_y`、`robot_y=imu_x`、`robot_z=imu_z`。三个轴必须各使用一次，且必须构成右手坐标系。
 
 udev 规则必须创建与配置一致的软连接。备用别名不存在时会记录
-`open_failed`，不会影响已选中的主端口。修改规则后执行：
+`open_failed`，不会影响已选中的主端口。若已安装旧版 `bxi-dev.rules`，请先备份并移出 `/etc/udev/rules.d/`。修改规则后执行：
 
 ```bash
-sudo cp script/bxi-dev.rules /etc/udev/rules.d/bxi-dev.rules
+sudo install -m 0644 script/udev/70-bxi-imu.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules
-sudo udevadm trigger
+sudo udevadm trigger --subsystem-match=tty --action=add
 ls -l /dev/ttyIMU*
 ```
 
