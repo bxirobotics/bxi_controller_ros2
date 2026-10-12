@@ -3,6 +3,10 @@ Description=ROS Launch Service
 
 [Service]
 Type=simple
+KillMode=control-group
+KillSignal=SIGINT
+TimeoutStopSec=15s
+SendSIGKILL=yes
 User=root
 WorkingDirectory=/home/bxi
 Environment=ROS_DOMAIN_ID=XX

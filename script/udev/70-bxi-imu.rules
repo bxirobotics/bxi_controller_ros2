@@ -1,0 +1,14 @@
+# Hipnuc IMU (10c4:ea60) -> /dev/ttyIMU.
+# x86_64: either physical USB port on bus 3.
+KERNEL=="ttyUSB*", KERNELS=="3-8", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", PROGRAM=="/usr/bin/uname -m", RESULT=="x86_64", MODE:="0660", SYMLINK+="ttyIMU"
+KERNEL=="ttyUSB*", KERNELS=="3-9", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", PROGRAM=="/usr/bin/uname -m", RESULT=="x86_64", MODE:="0660", SYMLINK+="ttyIMU"
+# aarch64 board: IMU and BMS may swap between these two paths.
+KERNEL=="ttyUSB*", KERNELS=="4-1.7", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", PROGRAM=="/usr/bin/uname -m", RESULT=="aarch64", MODE:="0660", SYMLINK+="ttyIMU"
+KERNEL=="ttyUSB*", KERNELS=="5-1", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", PROGRAM=="/usr/bin/uname -m", RESULT=="aarch64", MODE:="0660", SYMLINK+="ttyIMU"
+
+# Yesense USB CDC ACM IMU -> /dev/ttyIMU_YESENSE_1.
+# Keep this separate from the primary Hipnuc alias.
+KERNEL=="ttyACM*", KERNELS=="3-8", ATTRS{idVendor}=="5953", ATTRS{idProduct}=="5543", PROGRAM=="/usr/bin/uname -m", RESULT=="x86_64", MODE:="0660", SYMLINK+="ttyIMU_YESENSE_1"
+KERNEL=="ttyACM*", KERNELS=="3-9", ATTRS{idVendor}=="5953", ATTRS{idProduct}=="5543", PROGRAM=="/usr/bin/uname -m", RESULT=="x86_64", MODE:="0660", SYMLINK+="ttyIMU_YESENSE_1"
+KERNEL=="ttyACM*", KERNELS=="4-1.7", ATTRS{idVendor}=="5953", ATTRS{idProduct}=="5543", PROGRAM=="/usr/bin/uname -m", RESULT=="aarch64", MODE:="0660", SYMLINK+="ttyIMU_YESENSE_1"
+KERNEL=="ttyACM*", KERNELS=="5-1", ATTRS{idVendor}=="5953", ATTRS{idProduct}=="5543", PROGRAM=="/usr/bin/uname -m", RESULT=="aarch64", MODE:="0660", SYMLINK+="ttyIMU_YESENSE_1"

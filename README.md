@@ -36,8 +36,10 @@ The binary ROS2 packages of ROS2 environment and mujoco can be find here:[`bxi_r
 
 ### System Environment Setup   
 1. `Ubuntu 22.04`，with ROS2 version `humble`. `mujoco` requires `libglfw3-dev`.       
-2. Copy `./script/bxi-dev.rules` to `/etc/udev/rules.d/`
+2. Run `bash script/deploy_device_links.sh "$PWD/script"` to install device rules and back up the old combined rule file.
 3. To set up remote controller auto-start, edit `./script/ros_elf_launch.service`, copy to `/etc/systemd/system/`, and used the `systemctl` tool to enable the auto-start service.  
+
+部署相关文件的用途见 [`script/README.md`](script/README.md)。
 
 ### Startup Process
 In both simulation and hardware, the motors are in a disabled state when started, and all parameters are uncontrollable. The startup process consists of two steps:
