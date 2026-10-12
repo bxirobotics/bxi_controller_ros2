@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+PASSWORD=Bxi12345go
+
+sudo() {
+    printf '%s\n' "$PASSWORD" | command sudo -S -p '' "$@"
+}
+
 script_name="${BASH_SOURCE[0]##*/}"
 printf '[进入脚本] %s\n' "$script_name" >&2
 trap '
@@ -8,31 +14,6 @@ trap '
     printf "[离开脚本] %s (退出码=%s)\n" "$script_name" "$script_status" >&2
     exit "$script_status"
 ' EXIT
-
-# Full entries are downloaded alone; keep their sudo handling self-contained.
-sudo() {
-    if ((EUID == 0)); then
-        command sudo -n "$@"
-        return
-    fi
-    local password="${BXI_SUDO_PASSWORD:-}"
-    local password_file="${BXI_SUDO_PASSWORD_FILE:-/home/bxi/.config/bxi/sudo-password}"
-    if [[ -z "$password" && ( -e "$password_file" || -L "$password_file" ) ]]; then
-        [[ -f "$password_file" && ! -L "$password_file" && "$(stat -c '%a:%u' -- "$password_file")" == "600:$EUID" ]] || {
-            echo 'sudo password file must be a regular file owned by the current user with mode 0600' >&2
-            return 1
-        }
-        password="$(<"$password_file")"
-        [[ -n "$password" ]] || { echo 'sudo password file is empty' >&2; return 1; }
-    fi
-    if [[ -n "$password" ]]; then
-        printf '%s\n' "$password" | command sudo -S -p '' "$@"
-    else
-        command sudo -n "$@"
-    fi
-}
-export -f sudo
-
 
 script_dir="${1:?usage: deploy_device_links.sh PROJECT_SCRIPT_DIR}"
 for name in bxi-battle-dragon-link udev/70-bxi-{bat,imu,remote}.rules; do
