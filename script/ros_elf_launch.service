@@ -3,6 +3,10 @@ Description=ROS Launch Service
 
 [Service]
 Type=simple
+KillMode=control-group
+KillSignal=SIGINT
+TimeoutStopSec=15s
+SendSIGKILL=yes
 User=root
 Environment=ROS_DOMAIN_ID=XX
 Environment=RMW_IMPLEMENTATION=rmw_cyclonedds_cpp

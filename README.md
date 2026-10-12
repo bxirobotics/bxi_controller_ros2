@@ -88,6 +88,26 @@ sudo systemctl enable --now ros_elf_launch.service
 sudo systemctl status ros_elf_launch.service
 ```
 
+ELF3 完整部署入口位于独立的 `elf3-scripts` 仓库（`usr/usr_pro.sh` 和 `robot_test/test_pro.sh`）。其功能脚本位于本仓库 `script/`：
+
+- `generate_ros_config.sh`：从 service 模板生成指定 `ROS_DOMAIN_ID` 和停止策略配置到标准输出，不修改系统。
+- `generate_robot_config.sh`：纯 Bash 生成 `/opt/bxi/robot_config.yaml`；无参数或 `0` 无头，`1` 有头，外设清单采用 [bxi_robot_config_tool](https://github.com/timtimting/bxi_robot_config_tool) 默认规格。
+- `deploy_device_links.sh`：安装手柄链接助手与 udev 规则。安装 `script/udev/` 下三份规则，备份移出旧 `bxi-dev.rules`，重载并触发全部设备子系统；需要保留的现场规则须合入源码。
+- `deploy_autostart.sh`：生成并校验新配置，备份并清除旧 service 及同名 override/依赖目录，然后安装、启用并重启（会启动 ROS 进程；先确保硬件安全）。
+
+单独调用示例（在设备上的项目根目录执行；后两项会修改系统）：
+
+```bash
+BXI_ROBOT_CONFIG_FILE=/tmp/robot_config.yaml bash script/generate_robot_config.sh
+bash script/generate_ros_config.sh script/ros_elf_launch.service 124 > /tmp/ros_elf_launch.service
+bash script/deploy_device_links.sh "$PWD/script"
+bash script/deploy_autostart.sh "$PWD/script/ros_elf_launch.service" 124
+```
+
+两个完整部署入口每次都会生成默认无头的暂存配置，把旧配置备份到工作区 `.pre-deploy.XXXXXX/`，构建成功后安装到 `/opt/bxi/robot_config.yaml`。每次切换会覆盖原配置；部署完成后如需有头，可单独运行 `sudo bash script/generate_robot_config.sh 1`。
+
+完整部署入口通过 `https://v4.gh-proxy.org/https://github.com/bxirobotics/bxi_controller_ros2.git` 克隆默认分支。默认使用仓库内的四个功能脚本，修改提交到 `dev` 后由 CI 同步到 `main`。如需验证外部版本，先将本仓库的 `script/` 放到设备上**不属于待替换项目目录**的位置，再设置 `BXI_DEPLOY_SCRIPTS_DIR` 指向该绝对路径运行入口。首次克隆成功时，校验文件、脚本语法和 systemd 配置后才停止旧服务，并将旧项目保留到工作区 `.pre-deploy.XXXXXX/` 后重建。**首次克隆失败会先停用旧服务、删除旧工程及不完整克隆，再重试一次；第二次失败退出，旧工程已删除。**构建或重启失败不会自动回滚。sudo 自动读取私有凭据文件或环境变量，无凭据时使用 `sudo -n`；设备需预先配置凭据或免密权限，认证失败不交互提示。详细用法及验证命令见 [`script/README.md`](script/README.md)。
+
 ### RK3588 / RKNN 发布包
 
 ARM64 CI 默认生成包含 RKNN 的 `*_arm64.tar.gz` 和 SHA256 校验文件。
