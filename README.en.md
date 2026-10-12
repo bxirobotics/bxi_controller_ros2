@@ -66,13 +66,16 @@ For adding remote controllers or input controllers, robot business states, state
 sudo install -m 0755 ./script/bxi-battle-dragon-link /usr/local/bin/bxi-battle-dragon-link
 ```
 
-4. Copy the udev rule and reload udev:
+4. Install the separate IMU, battery and remote-controller udev rules, then reload udev. If `/etc/udev/rules.d/bxi-dev.rules` is installed, back it up and move it out of the rules directory first:
 
 ```bash
-sudo cp ./script/bxi-dev.rules /etc/udev/rules.d/
+sudo install -m 0644 ./script/udev/70-bxi-*.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules
-sudo udevadm trigger
+sudo udevadm trigger --subsystem-match=tty --action=add
+sudo udevadm trigger --subsystem-match=input --action=add
 ```
+
+The rules select USB paths by `uname -m`: `3-8`/`3-9` on `x86_64`, or `4-1.7`/`5-1` on the supported `aarch64` board. The IMU and battery may exchange ports; USB VID/PID distinguishes them.
 
 After reconnecting the Battle Dragon controller, `/dev/input/jsBattleDragon` should be available. For local debugging only, you can temporarily change `sources.gamepad.device` in `src/remote_controller/config/xbox_default.yaml` to the current system device, such as `/dev/input/js0`.
 

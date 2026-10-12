@@ -1,0 +1,8 @@
+# BMS (1a86:55d3) -> /dev/ttyBAT.
+# Other devices may share this VID/PID, so restrict the physical USB path.
+# x86_64: either physical USB port on bus 3.
+KERNEL=="ttyACM*", KERNELS=="3-8", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", PROGRAM=="/usr/bin/uname -m", RESULT=="x86_64", MODE:="0660", SYMLINK+="ttyBAT"
+KERNEL=="ttyACM*", KERNELS=="3-9", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", PROGRAM=="/usr/bin/uname -m", RESULT=="x86_64", MODE:="0660", SYMLINK+="ttyBAT"
+# aarch64 board: BMS and IMU may swap between these two paths.
+KERNEL=="ttyACM*", KERNELS=="4-1.7", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", PROGRAM=="/usr/bin/uname -m", RESULT=="aarch64", MODE:="0660", SYMLINK+="ttyBAT"
+KERNEL=="ttyACM*", KERNELS=="5-1", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", PROGRAM=="/usr/bin/uname -m", RESULT=="aarch64", MODE:="0660", SYMLINK+="ttyBAT"
