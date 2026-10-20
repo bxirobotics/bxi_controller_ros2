@@ -138,6 +138,24 @@ jobs:
           source: bxi_rl_controller_ros2_example_${{ env.tag_name }}.tar.gz,bxi_rl_controller_ros2_example_${{ env.tag_name }}.tar.gz.sha256
           target: ${{ secrets.DEPLOY_PATH }}/${{ env.PACKAGE_NAME }}
 
+      - name: Package Source Archive
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git archive --format=tar.gz --prefix="${PACKAGE_NAME}/" \
+            --output="${PACKAGE_NAME}.tar.gz" HEAD
+
+      - name: SCP Upload Source Archive
+        if: github.ref == 'refs/heads/main'
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          source: bxi_rl_controller_ros2_example.tar.gz
+          target: ${{ secrets.DEPLOY_PATH }}/${{ env.PACKAGE_NAME }}/bxi_ws
+          overwrite: true
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
