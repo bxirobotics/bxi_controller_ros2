@@ -1,0 +1,40 @@
+name: Robot Test Source Release
+
+on:
+  push:
+    branches: ["robot_test"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: robot-test-source-release
+  cancel-in-progress: false
+
+env:
+  PACKAGE_NAME: bxi_rl_controller_ros2_example
+
+jobs:
+  source-release:
+    if: github.ref == 'refs/heads/robot_test'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Package Source Archive
+        run: |
+          git archive --format=tar.gz --prefix="${PACKAGE_NAME}/" \
+            --output="${PACKAGE_NAME}.tar.gz" HEAD
+
+      - name: SCP Upload Source Archive
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          source: bxi_rl_controller_ros2_example.tar.gz
+          target: ${{ secrets.DEPLOY_PATH }}/${{ env.PACKAGE_NAME }}/robot_test
+          overwrite: true

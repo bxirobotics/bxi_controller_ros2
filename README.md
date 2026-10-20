@@ -41,6 +41,15 @@ The binary ROS2 packages of ROS2 environment and mujoco can be find here:[`bxi_r
 
 部署相关文件的用途见 [`script/README.md`](script/README.md)。
 
+### 测试分支源码包
+
+推送 `robot_test` 或手动运行该分支的 `Robot Test Source Release` 工作流时，CI 用
+`git archive` 打包当前提交的源码，不包含 `.git` 或未跟踪的构建产物。
+包内顶层目录为 `bxi_rl_controller_ros2_example/`；复用现有 SSH Secrets 上传至
+`${DEPLOY_PATH}/bxi_rl_controller_ros2_example/robot_test/`，覆盖同名旧包。
+下载地址：[bxi_rl_controller_ros2_example.tar.gz](https://download.bxirobotics.cn/d/ELF3/bxi_rl_controller_ros2_example/robot_test/bxi_rl_controller_ros2_example.tar.gz)。
+此工作流仅发布源码，不执行 ROS 编译。
+
 ### Startup Process
 In both simulation and hardware, the motors are in a disabled state when started, and all parameters are uncontrollable. The startup process consists of two steps:
 1. Enable position control of the motors. The motors can implement position control by setting three parameters:`pos kp kd`. As of Elf2 hardware, when received the 1st `reset` command, it's joints rotate to zero position and keep it for 10 seconds.              
