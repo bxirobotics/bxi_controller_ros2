@@ -90,6 +90,14 @@ sudo systemctl status ros_elf_launch.service
 
 部署相关文件的用途见 [`script/README.md`](script/README.md)。
 
+### 源码发布包
+
+`main` 的 AMD64 发布流程在编译成功后，用 `git archive` 打包当前提交的源码，
+不包含 `.git` 或未跟踪的构建产物。压缩包顶层目录为 `bxi_rl_controller_ros2_example/`。
+CI 复用现有 SSH Secrets，将固定文件名上传到
+`${DEPLOY_PATH}/bxi_rl_controller_ros2_example/bxi_ws/`，覆盖旧源码包。
+下载地址：[bxi_rl_controller_ros2_example.tar.gz](https://download.bxirobotics.cn/d/ELF3/bxi_rl_controller_ros2_example/bxi_ws/bxi_rl_controller_ros2_example.tar.gz)。
+
 ### RK3588 / RKNN 发布包
 
 ARM64 CI 默认生成包含 RKNN 的 `*_arm64.tar.gz` 和 SHA256 校验文件。
