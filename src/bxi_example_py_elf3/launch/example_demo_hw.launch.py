@@ -106,7 +106,7 @@ def generate_launch_description():
         + [
             DeclareLaunchArgument(
                 "imu_runtime_timeout_sec",
-                default_value="0.1",
+                default_value="1.0",
                 description="Seconds without IMU data before locked protection",
             ),
             IncludeLaunchDescription(

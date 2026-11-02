@@ -252,7 +252,6 @@ def _runtime_config() -> dict[str, object]:
             "maintenance_guard_sec": 0.005,
             "statistics_interval_sec": 60.0,
             "deadline_warning_interval_sec": 1.0,
-            "spin_wait_us": -1,
             "cpu_affinity": "control",
             "realtime_priority": 0,
             "python_switch_interval_sec": 0.001,

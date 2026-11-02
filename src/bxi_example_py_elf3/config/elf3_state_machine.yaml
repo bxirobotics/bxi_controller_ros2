@@ -23,15 +23,15 @@ control_runtime:
   compute_budget_sec: 0.005
   deadline_tolerance_sec: 0.001
 
+  # 维护线程同时采样 /proc/stat 整机 CPU（0–100%，全部核心归一化）。
   maintenance_hz: 5.0
   maintenance_guard_sec: 0.005
+  # INFO 汇总时序和 CPU 最低/最高/加权平均；仅唤醒延迟超限不打印 warning。
   statistics_interval_sec: 60.0
-  deadline_warning_interval_sec: 1.0
+  deadline_warning_interval_sec: 1.0  # 仅周期完成截止超限的 warning 汇总节流
 
   # 部署相关优化默认关闭；按目标机器能力显式开启。
   python_switch_interval_sec: 0.001
-  # 先睡眠，距离绝对释放点最后200微秒时忙等；-1表示完全关闭忙等。
-  spin_wait_us: 200
   cpu_affinity: control
   realtime_priority: 50 #需要程序以root运行，或者sudo prlimit --pid "$$" --rtprio=99:99赋予当前终端权限
 

@@ -18,9 +18,9 @@ from threading import Event, Lock
 import numpy as np
 
 import time
+import json
 import math
 import os
-import json
 from collections import deque
 from pathlib import Path
 from std_msgs.msg import String
@@ -38,6 +38,8 @@ from bxi_example_py_elf3.framework.joints import (
 )
 from bxi_example_py_elf3.framework.mod_api import MotorFrame
 from bxi_example_py_elf3.imu_freshness import ImuStampObserver
+from bxi_example_py_elf3.imu_diagnostics import ImuReceiveDiagnostics
+from bxi_example_py_elf3.framework.platform.status import CachedGraphStatusEncoder
 from bxi_example_py_elf3.framework.platform import (
     NamedJointStateSource,
     RobotControlRuntime,
@@ -103,6 +105,9 @@ class BxiExample(Node):
         super().__init__("bxi_example_py")
 
         self._shutting_down = Event()
+        # Context shutdown callbacks must never join workers or log.
+        self.context.on_shutdown(self._begin_shutdown)
+        self._imu_diagnostics = ImuReceiveDiagnostics()
 
         # 加载运行参数
         self.load_files()
@@ -160,7 +165,12 @@ class BxiExample(Node):
             cpu_affinity_plan=cpu_affinity_plan,
             fatal_callback=self._on_control_fatal,
         )
+        self._state_machine_info_encoder = CachedGraphStatusEncoder()
         self.state_machine_info_timer = None
+        self.imu_diagnostics_timer = self.create_timer(
+            30.0, self._report_imu_diagnostics,
+            callback_group=self.status_callback_group,
+        )
         if self.state_machine_info_hz > 0.0:
             self.state_machine_info_timer = self.create_timer(
                 1.0 / self.state_machine_info_hz,
@@ -203,7 +213,7 @@ class BxiExample(Node):
         self.imu_startup_timeout_sec = float(
             self.get_parameter("/imu_startup_timeout_sec").value
         )
-        self.declare_parameter("/imu_runtime_timeout_sec", 0.1)
+        self.declare_parameter("/imu_runtime_timeout_sec", 1.0)
         self.imu_runtime_timeout_sec = float(
             self.get_parameter("/imu_runtime_timeout_sec").value
         )
@@ -219,12 +229,18 @@ class BxiExample(Node):
         self.motor_override_release_blend_sec = 0.2
         self.motor_override_allow_in_zero_torque = False
 
-    def _on_control_fatal(self, _message: str):
+    def _begin_shutdown(self):
         self._shutting_down.set()
+        runtime = getattr(self, "runtime", None)
+        if runtime is not None:
+            runtime.request_stop()
+
+    def _on_control_fatal(self, _message: str):
+        self._begin_shutdown()
         rclpy.try_shutdown()
 
     def destroy_node(self):
-        self._shutting_down.set()
+        self._begin_shutdown()
         runtime = getattr(self, "runtime", None)
         if runtime is not None:
             try:
@@ -239,6 +255,8 @@ class BxiExample(Node):
     def init_pub_sub(self):
         # 订阅和发布主题
         self.io_callback_group = MutuallyExclusiveCallbackGroup()
+        # Keep remote messages ordered, independently of sensor callbacks.
+        self.remote_callback_group = MutuallyExclusiveCallbackGroup()
         self.status_callback_group = MutuallyExclusiveCallbackGroup()
         qos = QoSProfile(
             depth=1,
@@ -259,44 +277,44 @@ class BxiExample(Node):
         self.odom_sub = self.create_subscription(
             nav_msgs.msg.Odometry,
             self.topic_prefix + "odom",
-            self.odom_callback,
+            self._imu_diagnostics.wrap("odom", self.odom_callback),
             qos,
             callback_group=self.io_callback_group,
         )
         self.actuator_sub = self.create_subscription(
             bxiMsg.ActuatorStates,
             self.topic_prefix + "actuator_states",
-            self.actuator_callback,
+            self._imu_diagnostics.wrap("joints", self.actuator_callback),
             qos,
             callback_group=self.io_callback_group,
         )
         self.imu_sub = self.create_subscription(
             sensor_msgs.msg.Imu,
             self.topic_prefix + "imu_data",
-            self.imu_callback,
+            self._imu_diagnostics.wrap("imu", self.imu_callback),
             qos,
             callback_group=self.io_callback_group,
         )
         self.touch_sub = self.create_subscription(
             bxiMsg.TouchSensor,
             self.topic_prefix + "touch_sensor",
-            self.touch_callback,
+            self._imu_diagnostics.wrap("touch", self.touch_callback),
             qos,
             callback_group=self.io_callback_group,
         )
         self.joy_sub = self.create_subscription(
             bxiMsg.MotionCommands,
             "motion_commands",
-            self.joy_callback,
+            self._imu_diagnostics.wrap("remote", self.joy_callback),
             qos,
-            callback_group=self.io_callback_group,
+            callback_group=self.remote_callback_group,
         )
         self.motor_override_sub = self.create_subscription(
             bxiMsg.ActuatorCmds,
             self.motor_override_topic,
-            self.motor_override_callback,
+            self._imu_diagnostics.wrap("override", self.motor_override_callback),
             qos,
-            callback_group=self.io_callback_group,
+            callback_group=self.remote_callback_group,
         )
 
         self.rest_srv = self.create_client(
@@ -322,6 +340,8 @@ class BxiExample(Node):
 
     def startup_step(self, now: float) -> bool:
         """Perform the ELF3-specific two-stage reset before control starts."""
+        if self._shutting_down.is_set() or not self.context.ok():
+            return False
         if self.imu_required and not self._imu_received:
             if self._imu_startup_started_at is None:
                 self._imu_startup_started_at = now
@@ -404,6 +424,8 @@ class BxiExample(Node):
         return self._observation, events
 
     def _check_imu_runtime_safety(self):
+        if self._shutting_down.is_set() or not self.context.ok():
+            return
         if not self.imu_required:
             return
         now = time.monotonic()
@@ -415,12 +437,20 @@ class BxiExample(Node):
         if not self._imu_protection_latched and (
             now - last_received_at >= self.imu_runtime_timeout_sec
         ):
+            if self._shutting_down.is_set() or not self.context.ok():
+                return
             self._imu_protection_latched = True
+            diagnosis = json.dumps(self._imu_diagnostics.snapshot(), separators=(",", ":"))
             self.get_logger().error(
                 f"IMU data timeout: no frame for {now - last_received_at:.3f}s; "
-                "entering locked IMU protection state"
+                "entering locked IMU protection state; "
+                f"imu_receive_diag={diagnosis}"
             )
-        if not self._imu_protection_latched:
+        if (
+            not self._imu_protection_latched
+            or self._shutting_down.is_set()
+            or not self.context.ok()
+        ):
             return
         protection_state = "com.bxi.basic_actions/imu_protection"
         if self.runtime.current_state_name != protection_state:
@@ -463,6 +493,8 @@ class BxiExample(Node):
 
     def publish_motor_frame(self, frame: MotorFrame):
         """Convert a framework motor frame into the ELF3 ROS command message."""
+        if self._shutting_down.is_set() or not self.context.ok():
+            return
         state_name = self.runtime.framework.current_state_name
         override_permitted = self.motor_override_allow_in_zero_torque or (
             state_name != "com.bxi.basic_actions/zero_torque"
@@ -482,10 +514,23 @@ class BxiExample(Node):
         msg.torque = frame.torque.tolist()
         msg.kp = frame.kp.tolist()
         msg.kd = frame.kd.tolist()
-        self.act_pub.publish(msg)
+        if not self._shutting_down.is_set() and self.context.ok():
+            self.act_pub.publish(msg)
+
+    def _report_imu_diagnostics(self):
+        if (not self.imu_required or self._shutting_down.is_set()
+                or not self.context.ok()):
+            return
+        self.get_logger().info(
+            "IMU receive diagnostic (header age combines transport/executor delay, "
+            "not device age): " + json.dumps(
+                self._imu_diagnostics.snapshot(reset_window=True), separators=(",", ":")
+            )
+        )
 
     def publish_state_machine_info(self):
-        info = self.runtime.snapshot(include_graph=True)
+        encoder = self._state_machine_info_encoder
+        info = self.runtime.snapshot(include_graph=encoder.needs_graph)
         if info is None:
             return
         now = self.get_clock().now()
@@ -500,7 +545,7 @@ class BxiExample(Node):
         )
 
         msg = String()
-        msg.data = json.dumps(info, ensure_ascii=False, sort_keys=True)
+        msg.data = encoder.encode(info)
         self.state_machine_info_pub.publish(msg)
 
     def robot_reset(self, reset_step, release):
@@ -645,6 +690,7 @@ class BxiExample(Node):
         self.get_logger().warning(f"invalid motor override: {message}")
 
     def imu_callback(self, msg):
+        self._imu_diagnostics.phase("imu", "validate")
         if self.imu_required:
             stamp_status, stamp_age_ms = self._imu_stamp_observer.observe(msg.header.stamp)
             if stamp_status != "fresh":
@@ -682,6 +728,7 @@ class BxiExample(Node):
             )
         )
         if not quaternion_valid or not vectors_valid:
+            self._imu_diagnostics.rejected()
             now = time.monotonic()
             with self.lock_in:
                 self._imu_invalid_frame_count += 1
@@ -697,13 +744,18 @@ class BxiExample(Node):
                 )
             return
 
+        self._imu_diagnostics.phase("imu", "wait_input_lock")
+        lock_started_ns = time.monotonic_ns()
         with self.lock_in:
+            lock_wait_ns = time.monotonic_ns() - lock_started_ns
+            self._imu_diagnostics.phase("imu", "update")
             self.quat_xyzw[:] = quat.x, quat.y, quat.z, quat.w
             self.quat_wxyz[:] = quat.w, quat.x, quat.y, quat.z
             self.omega[:] = avel.x, avel.y, avel.z
             self.linear_acceleration[:] = acceleration.x, acceleration.y, acceleration.z
             self._imu_received = True
             self._imu_last_received_at = time.monotonic()
+            self._imu_diagnostics.accepted(lock_wait_ns)
             if not self._imu_first_received_logged:
                 self._imu_first_received_logged = True
                 self.get_logger().info(
@@ -727,8 +779,9 @@ def main(args=None):
     try:
         executor.add_node(node)
         node.runtime.attach_executor(executor)
-        node.runtime.start()
-        executor.spin()
+        if not node._shutting_down.is_set() and node.context.ok():
+            node.runtime.start()
+            executor.spin()
     finally:
         try:
             node.destroy_node()
