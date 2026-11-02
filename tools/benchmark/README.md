@@ -254,6 +254,35 @@ The report also compares sleeping-process CPU time with and without an idle
 visible. Use identical affinity, governor, power mode and command arguments when
 comparing machines or revisions.
 
+## Sleep-only control scheduling and status regressions
+
+The control scheduler waits with interruptible sleeps until absolute release
+points. Busy-wait scheduling and its `control_runtime.spin_wait_us` setting have
+been removed; delete that key from custom configurations. Control periods,
+deadline accounting and realtime priority are unchanged. ONNX Runtime sessions
+also disable intra/inter-op worker spinning, without changing their four-thread
+intra-op configuration.
+
+Remote edge extraction has a separate lock from the framework update lock;
+remote callbacks use a different mutually exclusive callback group from sensor
+callbacks. The ordered edge-event queue and startup button synchronization are
+unchanged. Status messages still include the full graph, but its structure and
+JSON are acquired/encoded only on the first successful snapshot for each node.
+Dynamic telemetry is refreshed normally; an explicitly supplied replacement
+graph refreshes the encoder cache.
+
+Run the focused regressions after sourcing ROS and your BXI binary package:
+
+```bash
+PYTHONPATH="$PWD/src/bxi_example_py_elf3:$PYTHONPATH" \
+  python3 -m pytest -q src/bxi_example_py_elf3/test/test_control_efficiency.py
+```
+
+These tests do not create ROS nodes or send motor commands. They cover sleep and
+shutdown behavior, remote extraction while the control lock is held, ordered
+button edges, callback-group separation, cached JSON compatibility and real ORT
+inference/IO binding on a temporary identity model.
+
 ## Live process scheduling inspection
 
 Inspect the main controller, all descendants and every Linux thread without
