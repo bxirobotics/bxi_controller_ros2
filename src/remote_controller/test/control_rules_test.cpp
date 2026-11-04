@@ -213,207 +213,194 @@ void test_debug_reports_changed_rule_selection()
     expect(messages.front().find("debug_axis") != std::string::npos);
 }
 
-void test_suspended_face_buttons_keep_existing_outputs()
+void test_filtered_analog_snaps_zero_without_blocking_valid_input()
 {
-    const RemoteConfig config = remote_controller::load_remote_config(
-        REMOTE_CONTROLLER_TEST_CONFIG_PATH);
+    RemoteConfig config;
+    ControlConfig control;
+    control.name = "filtered_axis";
+    control.type = "analog";
+    control.inputs.push_back(source_input("raw.axis"));
+    control.deadzone = 0.1;
+    control.alpha = 0.1;
+    config.controls.push_back(control);
 
-    {
-        InputMapper mapper(config);
-        mapper.set_signal("js.button.0", 1.0);
-        communication::msg::MotionCommands message;
-        mapper.fill_message(message);
-        expect(message.btn_7 == 1);
-        expect(message.btn_9 == 0);
-        expect(message.btn_10 == 0);
-    }
+    remote_controller::AnalogOutputConfig output;
+    output.field = "yawdot_des";
+    output.controls = {"filtered_axis"};
+    config.analog_outputs.push_back(output);
 
-    {
-        InputMapper mapper(config);
-        mapper.set_signal("js.button.3", 1.0);
-        communication::msg::MotionCommands message;
-        mapper.fill_message(message);
-        expect(message.btn_7 == 0);
-        expect(message.btn_9 == 1);
-        expect(message.btn_10 == 0);
-    }
-
-    {
-        InputMapper mapper(config);
-        mapper.set_signal("js.button.4", 1.0);
-        communication::msg::MotionCommands message;
-        mapper.fill_message(message);
-        expect(message.btn_7 == 0);
-        expect(message.btn_9 == 0);
-        expect(message.btn_10 == 1);
-    }
-}
-
-void test_b_button_selects_sequence_without_shoulders()
-{
-    const RemoteConfig config = remote_controller::load_remote_config(
-        REMOTE_CONTROLLER_TEST_CONFIG_PATH);
     InputMapper mapper(config);
-    mapper.set_signal("js.button.1", 1.0);
-    communication::msg::MotionCommands message;
-    mapper.fill_message(message);
-    expect(message.btn_1 == 0);
-    expect(message.btn_2 == 0);
-    expect(message.btn_3 == 0);
-    expect(message.btn_4 == 0);
-    expect(message.btn_5 == 0);
-    expect(message.btn_6 == 0);
-    expect(message.btn_7 == 0);
-    expect(message.btn_8 == 3);
-    expect(message.btn_9 == 2);
-    expect(message.btn_10 == 0);
+
+    // A valid target just outside the deadzone must be allowed to accumulate
+    // through the filter even while the filtered output starts below 0.1.
+    mapper.set_signal("raw.axis", 0.2);
+    for (int index = 0; index < 20; ++index) {
+        yaw(mapper);
+    }
+    expect(yaw(mapper) > 0.1);
+
+    // Once the raw target is centered, the filtered tail must eventually
+    // become an exact zero rather than an endlessly decaying residual.
+    mapper.set_signal("raw.axis", 0.0);
+    for (int index = 0; index < 20; ++index) {
+        yaw(mapper);
+    }
+    expect(yaw(mapper) == 0.0);
 }
 
-void test_basic_and_test_mode_buttons_do_not_overlap()
+void test_three_button_chord_excludes_two_button_x_chords()
 {
     const RemoteConfig config = remote_controller::load_remote_config(
         REMOTE_CONTROLLER_TEST_CONFIG_PATH);
 
-    const auto buttons_for = [&config](
-        const std::vector<std::pair<std::string, double>> &signals) {
+    {
         InputMapper mapper(config);
-        mapper.set_signals(signals);
+        mapper.set_signals({
+            {"js.button.6", 1.0},
+            {"js.button.7", 0.0},
+            {"js.button.3", 1.0},
+        });
         communication::msg::MotionCommands message;
         mapper.fill_message(message);
-        return std::vector<int>{
-            message.btn_1, message.btn_2, message.btn_3, message.btn_4,
-            message.btn_5, message.btn_6, message.btn_7, message.btn_8,
-            message.btn_9, message.btn_10,
-        };
+        expect(message.btn_1 == 0);
+        expect(message.btn_5 == 1);
+        expect(message.btn_10 == 0);
+    }
+
+    {
+        InputMapper mapper(config);
+        mapper.set_signals({
+            {"js.button.6", 0.0},
+            {"js.button.7", 1.0},
+            {"js.button.3", 1.0},
+        });
+        communication::msg::MotionCommands message;
+        mapper.fill_message(message);
+        expect(message.btn_1 == 1);
+        expect(message.btn_5 == 0);
+        expect(message.btn_10 == 0);
+    }
+
+    {
+        InputMapper mapper(config);
+        mapper.set_signals({
+            {"js.button.6", 1.0},
+            {"js.button.7", 1.0},
+            {"js.button.3", 1.0},
+        });
+        communication::msg::MotionCommands message;
+        mapper.fill_message(message);
+        expect(message.btn_1 == 0);
+        expect(message.btn_5 == 0);
+        expect(message.btn_10 == 9);
+    }
+}
+
+void test_all_auxiliary_and_face_button_combinations_are_reserved()
+{
+    struct ExpectedOutput
+    {
+        int slot;
+        int value;
     };
 
-    const auto only = [](const std::vector<int> &buttons, int index, int release_marker = 0) {
-        for (int i = 0; i < 10; ++i) {
-            expect(buttons[i] == (i == index - 1 ? 1 : (i == 7 ? release_marker : 0)));
+    // Rows use the LB/RB/LT/RT bit mask; columns use A/B/X/Y.
+    const ExpectedOutput expected[16][4] = {
+        {{10, 11}, {1, 2}, {9, 1}, {10, 12}},
+        {{6, 1}, {7, 1}, {5, 1}, {8, 1}},
+        {{2, 1}, {3, 1}, {1, 1}, {4, 1}},
+        {{10, 13}, {10, 14}, {10, 9}, {10, 10}},
+        {{10, 3}, {10, 4}, {10, 1}, {10, 2}},
+        {{10, 15}, {10, 16}, {10, 17}, {10, 18}},
+        {{10, 23}, {10, 24}, {10, 25}, {10, 26}},
+        {{10, 35}, {10, 36}, {10, 37}, {10, 38}},
+        {{10, 6}, {10, 5}, {10, 7}, {10, 8}},
+        {{10, 19}, {10, 20}, {10, 21}, {10, 22}},
+        {{10, 27}, {10, 28}, {10, 29}, {10, 30}},
+        {{10, 39}, {10, 40}, {10, 41}, {10, 42}},
+        {{10, 31}, {10, 32}, {10, 33}, {10, 34}},
+        {{10, 43}, {10, 44}, {10, 45}, {10, 46}},
+        {{10, 47}, {10, 48}, {10, 49}, {10, 50}},
+        {{10, 51}, {10, 52}, {10, 53}, {10, 54}},
+    };
+    const char *face_sources[4] = {
+        "js.button.0",
+        "js.button.1",
+        "js.button.3",
+        "js.button.4",
+    };
+
+    const RemoteConfig config = remote_controller::load_remote_config(
+        REMOTE_CONTROLLER_TEST_CONFIG_PATH);
+    for (int auxiliary_mask = 0; auxiliary_mask < 16; ++auxiliary_mask) {
+        for (int face = 0; face < 4; ++face) {
+            InputMapper mapper(config);
+            mapper.set_signals({
+                {"js.button.6", (auxiliary_mask & 1) != 0 ? 1.0 : 0.0},
+                {"js.button.7", (auxiliary_mask & 2) != 0 ? 1.0 : 0.0},
+                {"js.axis.5", (auxiliary_mask & 4) != 0 ? 1.0 : 0.0},
+                {"js.axis.4", (auxiliary_mask & 8) != 0 ? 1.0 : 0.0},
+                {face_sources[face], 1.0},
+            });
+
+            communication::msg::MotionCommands message;
+            mapper.fill_message(message);
+            const int actual[10] = {
+                message.btn_1,
+                message.btn_2,
+                message.btn_3,
+                message.btn_4,
+                message.btn_5,
+                message.btn_6,
+                message.btn_7,
+                message.btn_8,
+                message.btn_9,
+                message.btn_10,
+            };
+            for (int slot = 1; slot <= 10; ++slot) {
+                const int expected_value =
+                    slot == expected[auxiliary_mask][face].slot
+                    ? expected[auxiliary_mask][face].value
+                    : 0;
+                expect(actual[slot - 1] == expected_value);
+            }
         }
-    };
-
-    only(buttons_for({{"js.button.7", 1.0}, {"js.button.3", 1.0}}), 1, 3);
-    only(buttons_for({{"js.button.7", 1.0}, {"js.button.0", 1.0}}), 2, 3);
-    only(buttons_for({{"js.button.7", 1.0}, {"js.button.1", 1.0}}), 3, 3);
-    only(buttons_for({{"js.button.7", 1.0}, {"js.button.4", 1.0}}), 4, 3);
-    only(buttons_for({{"js.button.6", 1.0}, {"js.button.0", 1.0}}), 6, 3);
-    only(buttons_for({{"js.button.6", 1.0}, {"js.button.7", 1.0},
-                      {"js.button.4", 1.0}}), 8);
-    const auto exit_buttons = buttons_for({{"js.button.6", 1.0}, {"js.button.7", 1.0},
-                                           {"js.button.1", 1.0}});
-    for (int i = 0; i < 10; ++i) {
-        expect(exit_buttons[i] == (i == 7 ? 2 : 0));
     }
-    const auto forward_buttons = buttons_for({{"js.button.6", 1.0}, {"js.button.7", 1.0},
-                                               {"js.button.3", 1.0}});
-    expect(forward_buttons[4] == 1);
-    expect(forward_buttons[7] == 3);
-    only(buttons_for({{"js.button.0", 1.0}}), 7);
-    only(buttons_for({{"js.button.3", 1.0}}), 9);
-    only(buttons_for({{"js.button.4", 1.0}}), 10);
-    const auto sequence_buttons = buttons_for({{"js.button.1", 1.0}});
-    expect(sequence_buttons[7] == 3 && sequence_buttons[8] == 2);
-
-    expect(buttons_for({{"js.button.6", 1.0}})[7] == 3);
-    expect(buttons_for({{"js.button.7", 1.0}})[7] == 3);
-    expect(buttons_for({{"js.button.1", 1.0}})[7] == 3);
-    expect(buttons_for({})[7] == 0);
-
-    InputMapper mapper(config);
-    communication::msg::MotionCommands message;
-    mapper.set_signals({{"js.button.6", 1.0}, {"js.button.7", 1.0},
-                        {"js.button.1", 1.0}});
-    mapper.fill_message(message);
-    expect(message.btn_8 == 2);
-    mapper.set_signal("js.button.6", 0.0);
-    mapper.fill_message(message);
-    expect(message.btn_8 == 3 && message.btn_3 == 1);
-    mapper.set_signal("js.button.7", 0.0);
-    mapper.fill_message(message);
-    expect(message.btn_8 == 3 && message.btn_3 == 0);
-    mapper.set_signal("js.button.1", 0.0);
-    mapper.fill_message(message);
-    expect(message.btn_8 == 0);
-
-    mapper.set_signals({{"js.button.6", 1.0}, {"js.button.7", 1.0},
-                        {"js.button.1", 1.0}});
-    mapper.fill_message(message);
-    expect(message.btn_8 == 2);
-    mapper.set_signal("js.button.1", 0.0);
-    mapper.fill_message(message);
-    expect(message.btn_8 == 3);
-    mapper.set_signal("js.button.6", 0.0);
-    mapper.fill_message(message);
-    expect(message.btn_8 == 3);
-    mapper.set_signal("js.button.7", 0.0);
-    mapper.fill_message(message);
-    expect(message.btn_8 == 0);
 }
 
-void test_lie_down_keeps_original_rt_y_shortcut()
+void test_xbox_elrs_crsf_buttons_use_bit_packed_sources()
 {
     const RemoteConfig config = remote_controller::load_remote_config(
         REMOTE_CONTROLLER_TEST_CONFIG_PATH);
-    InputMapper mapper(config);
-    mapper.set_signals({{"js.axis.4", 1.0}, {"js.button.4", 1.0}});
-    communication::msg::MotionCommands message;
-    mapper.fill_message(message);
-    expect(message.btn_10 == 8);
-    expect(message.btn_4 == 0);
 
-    mapper.set_signal("js.button.7", 1.0);
-    mapper.fill_message(message);
-    expect(message.btn_10 != 8);
-}
+    {
+        InputMapper mapper(config);
+        const std::vector<std::string> outputs =
+            mapper.set_signal("crsf.xbox.button.back", 1.0);
+        expect(
+            std::find(outputs.begin(), outputs.end(), "system.stop") !=
+            outputs.end());
+    }
 
-void test_start_buttons_select_distinct_imu_sources()
-{
-    const RemoteConfig config = remote_controller::load_remote_config(
-        REMOTE_CONTROLLER_TEST_CONFIG_PATH);
-    InputMapper mapper(config);
-    expect(mapper.set_signal("js.button.14", 1.0) ==
-        std::vector<std::string>{"system.start"});
-    expect(mapper.set_signal("js.button.14", 0.0).empty());
-    expect(mapper.set_signal("js.button.13", 1.0) ==
-        std::vector<std::string>{"system.start_hardware"});
+    {
+        InputMapper mapper(config);
+        const std::vector<std::string> outputs =
+            mapper.set_signal("crsf.xbox.button.start", 1.0);
+        expect(
+            std::find(outputs.begin(), outputs.end(), "system.start") !=
+            outputs.end());
+    }
 
-    const auto original = config.system_commands.find("start");
-    const auto hardware = config.system_commands.find("start_hardware");
-    expect(original != config.system_commands.end());
-    expect(hardware != config.system_commands.end());
-    expect(std::any_of(original->second.begin(), original->second.end(),
-        [](const std::string &command) {
-            return command.find("example_demo_hw.launch.py enable_imu:=false") !=
-                std::string::npos;
-        }));
-    expect(std::any_of(original->second.begin(), original->second.end(),
-        [](const std::string &command) {
-            return command.find("start_imu_if_owned.sh") != std::string::npos;
-        }));
-    expect(std::any_of(original->second.begin(), original->second.end(),
-        [](const std::string &command) {
-            return command.find("/var/log/bxi_log/test_$(date +%Y-%m-%d_%H-%M-%S)_elf.log") !=
-                std::string::npos;
-        }));
-    expect(std::any_of(hardware->second.begin(), hardware->second.end(),
-        [](const std::string &command) {
-            return command.find("example_demo_hw.launch.py enable_imu:=true") !=
-                std::string::npos;
-        }));
-    expect(std::any_of(hardware->second.begin(), hardware->second.end(),
-        [](const std::string &command) {
-            return command.find("/var/log/bxi_log/test_${stamp}_elf.log") !=
-                std::string::npos;
-        }));
-    expect(std::none_of(hardware->second.begin(), hardware->second.end(),
-        [](const std::string &command) {
-            return command.find("start_imu_if_owned.sh") != std::string::npos;
-        }));
-    expect(config.system_mutexes.size() == 1);
-    expect(config.system_mutexes.front().acquire ==
-        (std::vector<std::string>{"start", "start_hardware"}));
-    expect(config.system_mutexes.front().release == "stop");
+    {
+        InputMapper mapper(config);
+        mapper.set_signals({
+            {"crsf.xbox.button.rb", 1.0},
+            {"crsf.xbox.button.x", 1.0},
+        });
+        communication::msg::MotionCommands message;
+        mapper.fill_message(message);
+        expect(message.btn_1 == 1);
+    }
 }
 
 }  // namespace
@@ -424,10 +411,9 @@ int main()
     test_priority_preempts_lower_active_inputs();
     test_bool_all_keeps_inactive_raw_inputs_in_the_selected_group();
     test_debug_reports_changed_rule_selection();
-    test_suspended_face_buttons_keep_existing_outputs();
-    test_b_button_selects_sequence_without_shoulders();
-    test_basic_and_test_mode_buttons_do_not_overlap();
-    test_lie_down_keeps_original_rt_y_shortcut();
-    test_start_buttons_select_distinct_imu_sources();
+    test_filtered_analog_snaps_zero_without_blocking_valid_input();
+    test_three_button_chord_excludes_two_button_x_chords();
+    test_all_auxiliary_and_face_button_combinations_are_reserved();
+    test_xbox_elrs_crsf_buttons_use_bit_packed_sources();
     return 0;
 }

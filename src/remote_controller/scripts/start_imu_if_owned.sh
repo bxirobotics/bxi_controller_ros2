@@ -172,7 +172,8 @@ log "monitoring hardware publisher activity by GID while bxi_imu is running"
   -p "imu_topic:=$imu_topic" \
   -p "hardware_node:=$hardware_node" \
   -p min_hardware_frames:=3 \
-  -p hardware_frame_window_ms:=500 &
+  -p hardware_frame_window_ms:=500 \
+  -p receive_diagnostics:=true &
 imu_guard_pid=$!
 
 while kill -0 "$bxi_imu_pid" 2>/dev/null; do

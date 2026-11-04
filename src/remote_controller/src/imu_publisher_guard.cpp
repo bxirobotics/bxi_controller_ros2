@@ -11,10 +11,10 @@
 #include <memory>
 #include <set>
 #include <string>
-#include <thread>
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
+#include "remote_controller/imu_receive_diagnostics.hpp"
 
 namespace
 {
@@ -26,6 +26,7 @@ public:
   ImuPublisherGuard()
   : Node("imu_publisher_guard")
   {
+    receive_diagnostics_enabled_ = declare_parameter<bool>("receive_diagnostics", false);
     topic_ = declare_parameter<std::string>("imu_topic", "/hardware/imu_data");
     hardware_node_ = declare_parameter<std::string>("hardware_node", "/hardware_elf3");
     min_frames_ = declare_parameter<int>("min_hardware_frames", 3);
@@ -51,7 +52,10 @@ public:
         on_imu_frame(*message, message_info);
       });
     graph_timer_ = create_wall_timer(
-      std::chrono::milliseconds(100), [this]() {refresh_hardware_gids();});
+      std::chrono::milliseconds(100), [this]() {
+        refresh_hardware_gids();
+        report_receive_diagnostics();
+      });
     refresh_hardware_gids();
     RCLCPP_INFO(
       get_logger(),
@@ -72,6 +76,36 @@ public:
   }
 
 private:
+  static std::int64_t steady_ns()
+  {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  }
+
+  static std::int64_t wall_ns()
+  {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  }
+
+  void report_receive_diagnostics()
+  {
+    if (!receive_diagnostics_enabled_ || !receive_diagnostics_.has_sample()) {
+      return;
+    }
+    const auto now = steady_ns();
+    if (now >= next_receive_report_ns_) {
+      const auto report = receive_diagnostics_.report(now, wall_ns(), true);
+      RCLCPP_INFO(get_logger(), "IMU independent receive window: %s", report.c_str());
+      next_receive_report_ns_ = now + 30000000000LL;
+    }
+    if (receive_diagnostics_.silence_ms(now) >= 50.0 && now >= next_gap_warning_ns_) {
+      const auto report = receive_diagnostics_.report(now, wall_ns(), false);
+      RCLCPP_WARN(get_logger(), "IMU independent receiver silent: %s", report.c_str());
+      next_gap_warning_ns_ = now + 5000000000LL;
+    }
+  }
+
   static std::string full_node_name(const rclcpp::TopicEndpointInfo & endpoint)
   {
     const auto & node_namespace = endpoint.node_namespace();
@@ -116,6 +150,24 @@ private:
     const sensor_msgs::msg::Imu & message,
     const rclcpp::MessageInfo & message_info)
   {
+    // Observe ALL publishers before the ownership filter. This subscription
+    // already exists: no extra 500 Hz subscriber, worker, file or per-frame log.
+    if (receive_diagnostics_enabled_) {
+      const auto now = steady_ns();
+      const auto & info = message_info.get_rmw_message_info();
+      const auto header_ns = static_cast<std::int64_t>(message.header.stamp.sec) *
+        1000000000LL + message.header.stamp.nanosec;
+      const auto & v = message.angular_velocity;
+      const auto & a = message.linear_acceleration;
+      const bool valid = valid_imu_frame(message) &&
+        std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z) &&
+        std::isfinite(a.x) && std::isfinite(a.y) && std::isfinite(a.z);
+      receive_diagnostics_.observe(now, wall_ns(), header_ns,
+        info.source_timestamp, info.received_timestamp, valid);
+      if (next_receive_report_ns_ == 0) {
+        next_receive_report_ns_ = now + 30000000000LL;
+      }
+    }
     if (hardware_active_ || hardware_gids_.empty()) {
       return;
     }
@@ -155,6 +207,10 @@ private:
       consecutive_hardware_frames_, hardware_node_.c_str());
   }
 
+  bool receive_diagnostics_enabled_{false};
+  remote_controller::ImuReceiveDiagnostics receive_diagnostics_;
+  std::int64_t next_receive_report_ns_{0};
+  std::int64_t next_gap_warning_ns_{0};
   std::string topic_;
   std::string hardware_node_;
   int min_frames_{3};
@@ -179,8 +235,7 @@ int main(int argc, char * argv[])
   rclcpp::executors::SingleThreadedExecutor executor;
   executor.add_node(node);
   while (rclcpp::ok() && !node->hardware_is_active() && !node->timed_out()) {
-    executor.spin_some();
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    executor.spin_once(std::chrono::milliseconds(20));
   }
   const bool hardware_is_active = node->hardware_is_active();
   const bool timed_out = node->timed_out();

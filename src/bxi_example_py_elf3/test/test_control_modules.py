@@ -97,10 +97,10 @@ def test_suspended_button_states_have_independent_remote_fields():
     assert [state.message_field for state in states] == [
         "btn_9",
         "btn_10",
-        "btn_7",
+        "btn_10",
     ]
+    assert [state.button_value for state in states] == [1, 12, 11]
     assert len({state.name for state in states}) == len(states)
-    assert len({state.message_field for state in states}) == len(states)
     state_file = Path(inspect.getsourcefile(SuspendedRunningState))
     assert "mods" in state_file.parts
     assert "com.bxi.suspended_tests" in state_file.parts

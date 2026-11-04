@@ -16,7 +16,8 @@ runtime_requirements:
 
 events:
   normal: {slot: btn_1, value: 1}
-  forward_back: {slot: btn_5, value: 1}
+  # origin/dev: LB+RB+X is published as btn_10=9.
+  forward_back: {slot: btn_10, value: 9}
   lie_down: {slot: btn_10, value: 8}
   zero_torque: {slot: btn_2, value: 1}
   pd_brake: {slot: btn_3, value: 1}

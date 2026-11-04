@@ -7,6 +7,7 @@ class ButtonControlState:
     name = ""
     button = ""
     message_field = ""
+    button_value = None
     source = ""
 
     def is_active(self, node):

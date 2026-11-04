@@ -1,182 +1,942 @@
 inputs:
+  # 所有候选设备严格独占。系统每 100 ms 扫描可用性；设备持续可用
+  # 500 ms 才允许抢占低优先级设备，避免插拔抖动造成频繁切换。
   selection:
     scan_interval_ms: 100
     promote_stable_ms: 500
 
 sources:
+  # CRSF 接收机。只有持续收到 CRC 正确的 RC 通道帧才会参与候选选择。
+  # 高频头转接器 usb_f2 使用 ELRS Hybrid/Wide 低延迟自定义协议：
+  # CH1..CH4 的 40 bit 每包同时携带四轴、15 个 HID 按钮、Consumer 键和十字帽；
+  # CH6/CH7 携带 LT/RT。数字状态整包原子更新，任意组合不会被轮询拆散。
+  # driver 解码后输出 crsf.xbox.* 原始信号，业务动作仍由 controls/outputs 统一定义。
+  crsf:
+    type: crsf
+    device: /dev/ttyCRSF
+    baud_rate: 921600
+    priority: 100
+    ready_timeout_ms: 1000
+    loss_timeout_ms: 300
+    cooldown_ms: 1000
+    signals:
+      # 与下方 Xbox gamepad 配置逐项对应：js.axis.3 是 HID Rz（右摇杆 Y），
+      # js.axis.0 是 HID X（左摇杆 X），js.axis.6 是 Hat X（十字键左右）。
+      crsf.left_y:        {from: crsf.xbox.right_y}
+      crsf.left_x:        {from: crsf.xbox.left_x}
+      crsf.yaw:           {from: crsf.xbox.hat_x}
+      crsf.right_x:       {from: crsf.xbox.right_x}
+      crsf.right_y:       {from: crsf.xbox.right_y}
+      crsf.trigger_left:  {from: crsf.xbox.trigger_left}
+      crsf.trigger_right: {from: crsf.xbox.trigger_right}
+      crsf.a:             {from: crsf.xbox.button.a}
+      crsf.b:             {from: crsf.xbox.button.b}
+      crsf.x:             {from: crsf.xbox.button.x}
+      crsf.y:             {from: crsf.xbox.button.y}
+      crsf.lb:            {from: crsf.xbox.button.lb}
+      crsf.rb:            {from: crsf.xbox.button.rb}
+      crsf.back:          {from: crsf.xbox.button.back}
+      crsf.start:         {from: crsf.xbox.button.start}
+      crsf.lstick:        {from: crsf.xbox.button.lstick}
+      crsf.rstick:        {from: crsf.xbox.button.rstick}
+      crsf.dpad_up:       {from: crsf.xbox.button.dpad_up}
+      crsf.dpad_down:     {from: crsf.xbox.button.dpad_down}
+      crsf.dpad_left:     {from: crsf.xbox.button.dpad_left}
+      crsf.dpad_right:    {from: crsf.xbox.button.dpad_right}
+      crsf.hat:           {from: crsf.xbox.hat}
+      crsf.hat_x:         {from: crsf.xbox.hat_x}
+      crsf.hat_y:         {from: crsf.xbox.hat_y}
+      crsf.button.0:      {from: crsf.xbox.button.0}
+      crsf.button.1:      {from: crsf.xbox.button.1}
+      crsf.button.2:      {from: crsf.xbox.button.2}
+      crsf.button.3:      {from: crsf.xbox.button.3}
+      crsf.button.4:      {from: crsf.xbox.button.4}
+      crsf.button.5:      {from: crsf.xbox.button.5}
+      crsf.button.6:      {from: crsf.xbox.button.6}
+      crsf.button.7:      {from: crsf.xbox.button.7}
+      crsf.button.8:      {from: crsf.xbox.button.8}
+      crsf.button.9:      {from: crsf.xbox.button.9}
+      crsf.button.10:     {from: crsf.xbox.button.10}
+      crsf.button.11:     {from: crsf.xbox.button.11}
+      crsf.button.12:     {from: crsf.xbox.button.12}
+      crsf.button.13:     {from: crsf.xbox.button.13}
+      crsf.button.14:     {from: crsf.xbox.button.14}
+      crsf.consumer:      {from: crsf.xbox.button.15}
+
+  # 手柄按键配置。
+  # 这里的 A/B/X/Y 是框架统一使用的 Xbox 逻辑名称；使用 PS4 手柄时分别对应
+  # ×/○/□/△。js.axis.N 和 js.button.N 是 Linux joystick 驱动上报的编号。
   gamepad:
     type: joystick
-    device: /dev/input/js0
+    device: /dev/input/jsBattleDragon
     priority: 50
     ready_timeout_ms: 1000
     loss_timeout_ms: 300
     cooldown_ms: 1000
     signals:
-      # Xbox joystick mapping reported by jstest for the deployed controller.
-      gamepad.left_y: {from: js.axis.3}
-      gamepad.left_x: {from: js.axis.0}
-      gamepad.yaw: {from: js.axis.6}
-      gamepad.trigger_right: {from: js.axis.4}
-      gamepad.lb: {from: js.button.6}
-      gamepad.rb: {from: js.button.7}
-      gamepad.stop: {from: js.button.11}
-      gamepad.start: {from: js.button.14}
-      gamepad.start_extra: {from: js.button.13}
-      gamepad.a: {from: js.button.0}
-      gamepad.b: {from: js.button.1}
-      gamepad.x: {from: js.button.3}
-      gamepad.y: {from: js.button.4}
+      # PS4（需要使用时取消本组注释，并注释下方 Xbox 组）
+      # gamepad.left_y: {from: js.axis.4}        # 左摇杆上下：前进/后退
+      # gamepad.left_x: {from: js.axis.0}        # 左摇杆左右：左移/右移
+      # gamepad.yaw: {from: js.axis.6}           # 右摇杆左右：原地转向
+      # gamepad.trigger_left: {from: js.axis.2}  # L2（框架逻辑名 LT）
+      # gamepad.trigger_right: {from: js.axis.5} # R2（框架逻辑名 RT）
+      # gamepad.stop: {from: js.button.9}        # Share：停止机器人程序
+      # gamepad.start: {from: js.button.10}      # Options：启动机器人程序
+      # gamepad.lb: {from: js.button.4}          # L1（框架逻辑名 LB）
+      # gamepad.rb: {from: js.button.5}          # R1（框架逻辑名 RB）
+      # gamepad.a: {from: js.button.0}           # ×（框架逻辑名 A）
+      # gamepad.b: {from: js.button.1}           # ○（框架逻辑名 B）
+      # gamepad.x: {from: js.button.2}           # □（框架逻辑名 X）
+      # gamepad.y: {from: js.button.3}           # △（框架逻辑名 Y）
 
+      # Xbox / BattleDragon
+      gamepad.left_y: {from: js.axis.3}          # 右摇杆上下：前进/后退（逻辑名沿用 left_y）
+      gamepad.left_x: {from: js.axis.0}          # 左摇杆左右：左移/右移
+      gamepad.yaw: {from: js.axis.6}             # 十字键左右：原地转向
+      gamepad.trigger_left: {from: js.axis.5}    # LT
+      gamepad.trigger_right: {from: js.axis.4}   # RT
+      gamepad.stop: {from: js.button.11}         # Back/View：停止机器人程序
+      gamepad.start: {from: js.button.14}        # Start/Menu：启动机器人程序
+      gamepad.lb: {from: js.button.6}            # LB（左肩键）
+      gamepad.rb: {from: js.button.7}            # RB（右肩键）
+      gamepad.a: {from: js.button.0}             # A
+      gamepad.b: {from: js.button.1}             # B
+      gamepad.x: {from: js.button.3}             # X
+      gamepad.y: {from: js.button.4}             # Y
+
+  # 键盘按键配置
+  keyboard:
+    type: keyboard
+    priority: 0
+    ready_timeout_ms: 1000
+    loss_timeout_ms: 300
+    cooldown_ms: 1000
+    poll_timeout_us: 20000
+    hold_ms: 200
+    stop: space
+    signals:
+      keyboard.vx: {from: keyboard.axis, negative: s, positive: w} # W/S：前进/后退
+      keyboard.vy: {from: keyboard.axis, negative: d, positive: a} # A/D：左移/右移
+      keyboard.yaw: {from: keyboard.axis, negative: e, positive: q} # Q/E：左转/右转
+      keyboard.normal: {from: keyboard.key, key: "1", hold_ms: 200} # 1：普通站立/行走
+      keyboard.pd_break: {from: keyboard.key, key: "!"}             # Shift+1：PD 刹车
+      keyboard.sonic: {from: keyboard.key, key: "@"}               # Shift+2：SONIC 遥操
+      keyboard.recover: {from: keyboard.key, key: "2"}             # 2：恢复站立
+      keyboard.dance: {from: keyboard.key, key: "3"}               # 3：舞蹈
+      keyboard.amp_run: {from: keyboard.key, key: "4"}             # 4：AMP 奔跑
+      keyboard.normal_run: {from: keyboard.key, key: "5"}          # 5：普通奔跑
+      keyboard.back_flip: {from: keyboard.key, key: "6"}           # 6：后空翻
+      keyboard.forward_flip: {from: keyboard.key, key: "7"}        # 7：前空翻
+      keyboard.applause: {from: keyboard.key, key: "8"}            # 8：鼓掌
+      keyboard.hello: {from: keyboard.key, key: "9"}               # 9：打招呼
+      keyboard.normal_depth: {from: keyboard.key, key: "0"}        # 0：深度相机行走
+
+#预设的一些，输入曲线
 curves:
-  vx_suspended:
-    type: piecewise
-    deadzone: 0.0305
-    limit: [-0.5, 1.0]
-    points:
-      - [-1.0, -0.5]
-      - [0.0, 0.0]
-      - [1.0, 1.0]
-
-  vy_suspended:
+  stick:
     type: expo
-    deadzone: 0.0305
-    limit: [-0.4, 0.4]
+    deadzone: 0.03
+    expo: 0.0
+    limit: [-1.0, 1.0]
     calibration:
       input: [-1.0, 0.0, 1.0]
-      output: [-0.4, 0.0, 0.4]
+      output: [-1.0, 0.0, 1.0]
 
-  yaw_suspended:
-    type: expo
-    deadzone: 0.0305
-    limit: [-0.6, 0.6]
-    calibration:
-      input: [-1.0, 0.0, 1.0]
-      output: [-0.6, 0.0, 0.6]
-
+#处理来自不同source的输入，映射到统一的controls
 controls:
   move.vx:
     type: analog
+    mix: max_abs
     inputs:
       - source: gamepad.left_y
         direction: -1
-    curve: vx_suspended
+        curve: stick
+      - source: crsf.left_y
+        direction: -1
+        curve: stick
+      - source: keyboard.vx
+    deadzone: 0.03
+    min: -1.0
+    max: 1.0
     alpha: 0.03
 
   move.vy:
     type: analog
+    mix: max_abs
     inputs:
       - source: gamepad.left_x
         direction: -1
-    curve: vy_suspended
+        curve: stick
+      # CH1 对应 Xbox 左摇杆 X，沿用手柄横移方向。
+      - source: crsf.left_x
+        direction: -1
+        curve: stick
+      - source: keyboard.vy
+    deadzone: 0.03
+    min: -1.0
+    max: 1.0
     alpha: 0.03
 
   move.yaw:
     type: analog
+    mix: max_abs
     inputs:
       - source: gamepad.yaw
         direction: -1
-    curve: yaw_suspended
+        curve: stick
+      - source: crsf.yaw
+        direction: -1
+        curve: stick
+      - source: keyboard.yaw
+    deadzone: 0.03
+    min: -1.0
+    max: 1.0
     alpha: 0.05
 
-  system.stop_event: {type: bool, inputs: [{source: gamepad.stop}]}
-  system.start_event: {type: bool, inputs: [{source: gamepad.start}]}
-  system.start_hardware_event: {type: bool, inputs: [{source: gamepad.start_extra}]}
-  button.a_event: {type: bool, inputs: [{source: gamepad.a}]}
-  button.b_event: {type: bool, inputs: [{source: gamepad.b}]}
-  button.x_event: {type: bool, inputs: [{source: gamepad.x}]}
-  button.y_event: {type: bool, inputs: [{source: gamepad.y}]}
-  shoulder.left_event: {type: bool, inputs: [{source: gamepad.lb}]}
-  shoulder.right_event: {type: bool, inputs: [{source: gamepad.rb}]}
-  trigger.right_event:
+  # 手柄保持原有的 0/1 按键阈值；每个 control 统一使用 inputs 规则列表。
+  gamepad.stop_event: {type: bool, inputs: [{source: gamepad.stop}]}
+  gamepad.start_event: {type: bool, inputs: [{source: gamepad.start}]}
+  gamepad.lb_event: {type: bool, inputs: [{source: gamepad.lb}]}
+  gamepad.rb_event: {type: bool, inputs: [{source: gamepad.rb}]}
+  gamepad.a_event: {type: bool, inputs: [{source: gamepad.a}]}
+  gamepad.b_event: {type: bool, inputs: [{source: gamepad.b}]}
+  gamepad.x_event: {type: bool, inputs: [{source: gamepad.x}]}
+  gamepad.y_event: {type: bool, inputs: [{source: gamepad.y}]}
+
+  # CRSF 与 gamepad 使用相同的物理键和相同业务含义。
+  crsf.stop_event: {type: bool, inputs: [{source: crsf.back}]}
+  crsf.start_event: {type: bool, inputs: [{source: crsf.start}]}
+  crsf.lb_event: {type: bool, inputs: [{source: crsf.lb}]}
+  crsf.rb_event: {type: bool, inputs: [{source: crsf.rb}]}
+  crsf.a_event: {type: bool, inputs: [{source: crsf.a}]}
+  crsf.b_event: {type: bool, inputs: [{source: crsf.b}]}
+  crsf.x_event: {type: bool, inputs: [{source: crsf.x}]}
+  crsf.y_event: {type: bool, inputs: [{source: crsf.y}]}
+  crsf.dpad_left_event: {type: bool, inputs: [{source: crsf.dpad_left}]}
+  crsf.dpad_right_event: {type: bool, inputs: [{source: crsf.dpad_right}]}
+
+  system.stop_event:
+    type: bool
+    inputs: [{when: {any: [gamepad.stop_event, crsf.stop_event]}, value: true}]
+  system.start_event:
+    type: bool
+    inputs: [{when: {any: [gamepad.start_event, crsf.start_event]}, value: true}]
+  shoulder.left_event:
+    type: bool
+    inputs: [{when: {any: [gamepad.lb_event, crsf.lb_event]}, value: true}]
+  shoulder.right_event:
+    type: bool
+    inputs: [{when: {any: [gamepad.rb_event, crsf.rb_event]}, value: true}]
+  button.a_event:
+    type: bool
+    inputs: [{when: {any: [gamepad.a_event, crsf.a_event]}, value: true}]
+  button.b_event:
+    type: bool
+    inputs: [{when: {any: [gamepad.b_event, crsf.b_event]}, value: true}]
+  button.x_event:
+    type: bool
+    inputs: [{when: {any: [gamepad.x_event, crsf.x_event]}, value: true}]
+  button.y_event:
+    type: bool
+    inputs: [{when: {any: [gamepad.y_event, crsf.y_event]}, value: true}]
+
+  gamepad.trigger.left_event:
+    type: bool
+    threshold: 0.85
+    hysteresis: 0.05
+    inputs: [{source: gamepad.trigger_left}]
+  gamepad.trigger.right_event:
     type: bool
     threshold: 0.85
     hysteresis: 0.05
     inputs: [{source: gamepad.trigger_right}]
+  crsf.trigger.left_event:
+    type: bool
+    threshold: 0.85
+    hysteresis: 0.05
+    inputs: [{source: crsf.trigger_left}]
+  crsf.trigger.right_event:
+    type: bool
+    threshold: 0.85
+    hysteresis: 0.05
+    inputs: [{source: crsf.trigger_right}]
+  trigger.left_event:
+    type: bool
+    inputs: [{when: {any: [gamepad.trigger.left_event, crsf.trigger.left_event]}, value: true}]
+  trigger.right_event:
+    type: bool
+    inputs: [{when: {any: [gamepad.trigger.right_event, crsf.trigger.right_event]}, value: true}]
 
+  keyboard.normal_event: {type: bool, inputs: [{source: keyboard.normal}]}
+  keyboard.pd_break_event: {type: bool, inputs: [{source: keyboard.pd_break}]}
+  keyboard.sonic_event: {type: bool, inputs: [{source: keyboard.sonic}]}
+  keyboard.recover_event: {type: bool, inputs: [{source: keyboard.recover}]}
+  keyboard.dance_event: {type: bool, inputs: [{source: keyboard.dance}]}
+  keyboard.amp_run_event: {type: bool, inputs: [{source: keyboard.amp_run}]}
+  keyboard.normal_run_event: {type: bool, inputs: [{source: keyboard.normal_run}]}
+  keyboard.back_flip_event: {type: bool, inputs: [{source: keyboard.back_flip}]}
+  keyboard.forward_flip_event: {type: bool, inputs: [{source: keyboard.forward_flip}]}
+  keyboard.applause_event: {type: bool, inputs: [{source: keyboard.applause}]}
+  keyboard.hello_event: {type: bool, inputs: [{source: keyboard.hello}]}
+  keyboard.normal_depth_event: {type: bool, inputs: [{source: keyboard.normal_depth}]}
+
+#将统一的controls映射到输出
 outputs:
   conflict_policy: first_wins
   publish_on_change: true
 
+  #连续的模拟值
   analog:
     vx: move.vx
     vy: move.vy
-    yaw: move.yaw
-    height:
-      control: move.vx
-      scale: 0.0
-      offset: 1.0
+    yaw:
+      controls: [move.yaw]
+      mix: max_abs
 
+  #上升沿触发，满足条件会输出目标值随后恢复为0
   edge:
+    # system.<name> 代表触发下面的特定命令。
+    # Xbox Back/View：停止机器人程序（gamepad 与 CRSF 一致）。
     - output: system.stop
       when: [system.stop_event]
+    # Xbox Start/Menu：启动机器人程序（gamepad 与 CRSF 一致）。
     - output: system.start
       when: [system.start_event]
-    - output: system.start_hardware
-      when: [system.start_hardware_event]
 
+  #电平触发，满足条件会一直输出
   level:
-    # Both shoulders + B exits suspended tests to zero torque.
-    - output: btn_8=2
-      when: [shoulder.left_event, shoulder.right_event, button.b_event]
-    # Both shoulders + Y enters suspended tests from the basic domain.
-    - output: btn_8=1
-      when: [shoulder.left_event, shoulder.right_event, button.y_event]
-    # Keep a release marker until LB, RB and B are all up. Combo rules above
-    # take precedence under the configured first_wins conflict policy.
-    - output: btn_8=3
-      when: [shoulder.left_event]
-    - output: btn_8=3
-      when: [shoulder.right_event]
-    - output: btn_8=3
-      when: [button.b_event]
-    # Both shoulders + X toggles the forward/back mode from normal.
-    - output: btn_5=1
-      when: [shoulder.left_event, shoulder.right_event, button.x_event]
-    # Keep main's RT+Y shortcut for the lie-down motion.
-    - output: btn_10=8
-      when: [trigger.right_event, button.y_event, {released: shoulder.left_event}, {released: shoulder.right_event}]
+    # RB+X（键盘 1）：普通站立/行走 normal。
     - output: btn_1=1
-      when: [shoulder.right_event, button.x_event, {released: shoulder.left_event}]
+      when:
+        any:
+          - - shoulder.right_event
+            - button.x_event
+            - released: shoulder.left_event
+            - released: trigger.left_event
+            - released: trigger.right_event
+          - [keyboard.normal_event]
+    # B：导航控制 navigation_control。
+    - output: btn_1=2
+      when:
+        - button.b_event
+        - released: shoulder.left_event
+        - released: shoulder.right_event
+        - released: trigger.left_event
+        - released: trigger.right_event
+    # RB+A：零力矩 zero_torque。
     - output: btn_2=1
-      when: [shoulder.right_event, button.a_event, {released: shoulder.left_event}]
-    - output: btn_3=1
-      when: [shoulder.right_event, button.b_event, {released: shoulder.left_event}]
-    - output: btn_4=1
-      when: [shoulder.right_event, button.y_event, {released: shoulder.left_event}]
-    - output: btn_6=1
-      when: [shoulder.left_event, button.a_event, {released: shoulder.right_event}]
-    # X/Y/A/B are exclusive test commands only without either shoulder held.
-    - output: btn_9=2
-      when: [button.b_event, {released: shoulder.left_event}, {released: shoulder.right_event}]
-    - output: btn_9=1
-      when: [button.x_event, {released: shoulder.left_event}, {released: shoulder.right_event}]
-    - output: btn_10=1
-      when: [button.y_event, {released: shoulder.left_event}, {released: shoulder.right_event}]
-    - output: btn_7=1
-      when: [button.a_event, {released: shoulder.left_event}, {released: shoulder.right_event}]
+      when:
+        - shoulder.right_event
+        - button.a_event
+        - released: shoulder.left_event
+        - released: trigger.left_event
+        - released: trigger.right_event
 
+    # RB+B（键盘 Shift+1）：PD 刹车 pd_brake。
+    - output: btn_3=1
+      when: 
+        any:
+          - - shoulder.right_event
+            - button.b_event
+            - released: shoulder.left_event
+            - released: trigger.left_event
+            - released: trigger.right_event
+          - [keyboard.pd_break_event]
+
+    # RB+Y：初始姿态 initial_pos。
+    - output: btn_4=1
+      when:
+        any:
+          - - shoulder.right_event
+            - button.y_event
+            - released: shoulder.left_event
+            - released: trigger.left_event
+            - released: trigger.right_event
+
+    # LB+X（键盘 3）：舞蹈 dance。
+    - output: btn_5=1
+      when:
+        any:
+          - - shoulder.left_event
+            - button.x_event
+            - released: shoulder.right_event
+            - released: trigger.left_event
+            - released: trigger.right_event
+          - [keyboard.dance_event]
+
+    # LB+A（键盘 2）：恢复站立 recover。
+    - output: btn_6=1
+      when:
+        any:
+          - - shoulder.left_event
+            - button.a_event
+            - released: shoulder.right_event
+            - released: trigger.left_event
+            - released: trigger.right_event
+          - [keyboard.recover_event]
+
+    # LB+B（键盘 5）：普通奔跑 normal_run。
+    - output: btn_7=1
+      when:
+        any:
+          - - shoulder.left_event
+            - button.b_event
+            - released: shoulder.right_event
+            - released: trigger.left_event
+            - released: trigger.right_event
+          - [keyboard.normal_run_event]
+
+    # LB+Y（键盘 4）：AMP 奔跑 amp_run。
+    - output: btn_8=1
+      when:
+        any:
+          - - shoulder.left_event
+            - button.y_event
+            - released: shoulder.right_event
+            - released: trigger.left_event
+            - released: trigger.right_event
+          - [keyboard.amp_run_event]
+
+    # X：当前动作暂停/继续；在 SONIC 状态中用于重置朝向对齐。
+    - output: btn_9=1
+      when:
+        - button.x_event
+        - released: shoulder.left_event
+        - released: shoulder.right_event
+        - released: trigger.left_event
+        - released: trigger.right_event
+
+    # LT+X（键盘 6）：后空翻 back_flip。
+    - output: btn_10=1
+      when:
+        any:
+          - - trigger.left_event
+            - button.x_event
+            - released: shoulder.left_event
+            - released: shoulder.right_event
+            - released: trigger.right_event
+          - [keyboard.back_flip_event]
+
+    # LT+Y（键盘 7）：前空翻 forward_flip。
+    - output: btn_10=2
+      when:
+        any:
+          - - trigger.left_event
+            - button.y_event
+            - released: shoulder.left_event
+            - released: shoulder.right_event
+            - released: trigger.right_event
+          - [keyboard.forward_flip_event]
+
+    # LT+A：芭蕾动作 ballet。
+    - output: btn_10=3
+      when:
+        any:
+          - - trigger.left_event
+            - button.a_event
+            - released: shoulder.left_event
+            - released: shoulder.right_event
+            - released: trigger.right_event
+
+    # LT+B：PICO GMR 遥操 pico_gmr_motion。
+    - output: btn_10=4
+      when:
+        any:
+          - - trigger.left_event
+            - button.b_event
+            - released: shoulder.left_event
+            - released: shoulder.right_event
+            - released: trigger.right_event
+
+    # RT+B（键盘 8）：鼓掌 applause。
+    - output: btn_10=5
+      when:
+        any:
+          - - trigger.right_event
+            - button.b_event
+            - released: shoulder.left_event
+            - released: shoulder.right_event
+            - released: trigger.left_event
+          - [keyboard.applause_event]
+
+    # RT+A（键盘 9）：打招呼 hello。
+    - output: btn_10=6
+      when:
+        any:
+          - - trigger.right_event
+            - button.a_event
+            - released: shoulder.left_event
+            - released: shoulder.right_event
+            - released: trigger.left_event
+          - [keyboard.hello_event]
+    
+    # RT+X（键盘 0）：深度相机行走 normal_depth。
+    - output: btn_10=7
+      when:
+        any:
+          - - trigger.right_event
+            - button.x_event
+            - released: shoulder.left_event
+            - released: shoulder.right_event
+            - released: trigger.left_event
+          - [keyboard.normal_depth_event]
+
+    # RT+Y：趴下 lie_down。
+    - output: btn_10=8
+      when:
+        any:
+          - - trigger.right_event
+            - button.y_event
+            - released: shoulder.left_event
+            - released: shoulder.right_event
+            - released: trigger.left_event
+
+    # LB+RB+X（键盘 Shift+2）：SONIC 遥操。
+    - output: btn_10=9
+      when:
+        any:
+          - - shoulder.left_event
+            - shoulder.right_event
+            - button.x_event
+            - released: trigger.left_event
+            - released: trigger.right_event
+          - [keyboard.sonic_event]
+
+    # LB+RB+Y：任意动作播放 any_motion。
+    - output: btn_10=10
+      when:
+        any:
+          - - shoulder.left_event
+            - shoulder.right_event
+            - button.y_event
+            - released: trigger.left_event
+            - released: trigger.right_event
+
+    # 预留组合：四个辅助键 LB/RB/LT/RT 的全部状态 × A/B/X/Y。
+    # 已有映射保持 btn_1..btn_9 和 btn_10=1..10 不变；缺失组合使用 btn_10=11..54。
+    # 约定：LB=shoulder.left，RB=shoulder.right，LT=trigger.left，RT=trigger.right。
+
+    # A
+    - output: btn_10=11
+      when:
+        - button.a_event
+        - released: shoulder.left_event
+        - released: shoulder.right_event
+        - released: trigger.left_event
+        - released: trigger.right_event
+
+    # Y
+    - output: btn_10=12
+      when:
+        - button.y_event
+        - released: shoulder.left_event
+        - released: shoulder.right_event
+        - released: trigger.left_event
+        - released: trigger.right_event
+
+    # LB+RB+A
+    - output: btn_10=13
+      when:
+        - shoulder.left_event
+        - shoulder.right_event
+        - button.a_event
+        - released: trigger.left_event
+        - released: trigger.right_event
+
+    # LB+RB+B
+    - output: btn_10=14
+      when:
+        - shoulder.left_event
+        - shoulder.right_event
+        - button.b_event
+        - released: trigger.left_event
+        - released: trigger.right_event
+
+    # LB+LT+A
+    - output: btn_10=15
+      when:
+        - shoulder.left_event
+        - trigger.left_event
+        - button.a_event
+        - released: shoulder.right_event
+        - released: trigger.right_event
+
+    # LB+LT+B
+    - output: btn_10=16
+      when:
+        - shoulder.left_event
+        - trigger.left_event
+        - button.b_event
+        - released: shoulder.right_event
+        - released: trigger.right_event
+
+    # LB+LT+X
+    - output: btn_10=17
+      when:
+        - shoulder.left_event
+        - trigger.left_event
+        - button.x_event
+        - released: shoulder.right_event
+        - released: trigger.right_event
+
+    # LB+LT+Y
+    - output: btn_10=18
+      when:
+        - shoulder.left_event
+        - trigger.left_event
+        - button.y_event
+        - released: shoulder.right_event
+        - released: trigger.right_event
+
+    # LB+RT+A
+    - output: btn_10=19
+      when:
+        - shoulder.left_event
+        - trigger.right_event
+        - button.a_event
+        - released: shoulder.right_event
+        - released: trigger.left_event
+
+    # LB+RT+B
+    - output: btn_10=20
+      when:
+        - shoulder.left_event
+        - trigger.right_event
+        - button.b_event
+        - released: shoulder.right_event
+        - released: trigger.left_event
+
+    # LB+RT+X
+    - output: btn_10=21
+      when:
+        - shoulder.left_event
+        - trigger.right_event
+        - button.x_event
+        - released: shoulder.right_event
+        - released: trigger.left_event
+
+    # LB+RT+Y
+    - output: btn_10=22
+      when:
+        - shoulder.left_event
+        - trigger.right_event
+        - button.y_event
+        - released: shoulder.right_event
+        - released: trigger.left_event
+
+    # RB+LT+A
+    - output: btn_10=23
+      when:
+        - shoulder.right_event
+        - trigger.left_event
+        - button.a_event
+        - released: shoulder.left_event
+        - released: trigger.right_event
+
+    # RB+LT+B
+    - output: btn_10=24
+      when:
+        - shoulder.right_event
+        - trigger.left_event
+        - button.b_event
+        - released: shoulder.left_event
+        - released: trigger.right_event
+
+    # RB+LT+X
+    - output: btn_10=25
+      when:
+        - shoulder.right_event
+        - trigger.left_event
+        - button.x_event
+        - released: shoulder.left_event
+        - released: trigger.right_event
+
+    # RB+LT+Y
+    - output: btn_10=26
+      when:
+        - shoulder.right_event
+        - trigger.left_event
+        - button.y_event
+        - released: shoulder.left_event
+        - released: trigger.right_event
+
+    # RB+RT+A
+    - output: btn_10=27
+      when:
+        - shoulder.right_event
+        - trigger.right_event
+        - button.a_event
+        - released: shoulder.left_event
+        - released: trigger.left_event
+
+    # RB+RT+B
+    - output: btn_10=28
+      when:
+        - shoulder.right_event
+        - trigger.right_event
+        - button.b_event
+        - released: shoulder.left_event
+        - released: trigger.left_event
+
+    # RB+RT+X
+    - output: btn_10=29
+      when:
+        - shoulder.right_event
+        - trigger.right_event
+        - button.x_event
+        - released: shoulder.left_event
+        - released: trigger.left_event
+
+    # RB+RT+Y
+    - output: btn_10=30
+      when:
+        - shoulder.right_event
+        - trigger.right_event
+        - button.y_event
+        - released: shoulder.left_event
+        - released: trigger.left_event
+
+    # LT+RT+A
+    - output: btn_10=31
+      when:
+        - trigger.left_event
+        - trigger.right_event
+        - button.a_event
+        - released: shoulder.left_event
+        - released: shoulder.right_event
+
+    # LT+RT+B
+    - output: btn_10=32
+      when:
+        - trigger.left_event
+        - trigger.right_event
+        - button.b_event
+        - released: shoulder.left_event
+        - released: shoulder.right_event
+
+    # LT+RT+X
+    - output: btn_10=33
+      when:
+        - trigger.left_event
+        - trigger.right_event
+        - button.x_event
+        - released: shoulder.left_event
+        - released: shoulder.right_event
+
+    # LT+RT+Y
+    - output: btn_10=34
+      when:
+        - trigger.left_event
+        - trigger.right_event
+        - button.y_event
+        - released: shoulder.left_event
+        - released: shoulder.right_event
+
+    # LB+RB+LT+A
+    - output: btn_10=35
+      when:
+        - shoulder.left_event
+        - shoulder.right_event
+        - trigger.left_event
+        - button.a_event
+        - released: trigger.right_event
+
+    # LB+RB+LT+B
+    - output: btn_10=36
+      when:
+        - shoulder.left_event
+        - shoulder.right_event
+        - trigger.left_event
+        - button.b_event
+        - released: trigger.right_event
+
+    # LB+RB+LT+X
+    - output: btn_10=37
+      when:
+        - shoulder.left_event
+        - shoulder.right_event
+        - trigger.left_event
+        - button.x_event
+        - released: trigger.right_event
+
+    # LB+RB+LT+Y
+    - output: btn_10=38
+      when:
+        - shoulder.left_event
+        - shoulder.right_event
+        - trigger.left_event
+        - button.y_event
+        - released: trigger.right_event
+
+    # LB+RB+RT+A
+    - output: btn_10=39
+      when:
+        - shoulder.left_event
+        - shoulder.right_event
+        - trigger.right_event
+        - button.a_event
+        - released: trigger.left_event
+
+    # LB+RB+RT+B
+    - output: btn_10=40
+      when:
+        - shoulder.left_event
+        - shoulder.right_event
+        - trigger.right_event
+        - button.b_event
+        - released: trigger.left_event
+
+    # LB+RB+RT+X
+    - output: btn_10=41
+      when:
+        - shoulder.left_event
+        - shoulder.right_event
+        - trigger.right_event
+        - button.x_event
+        - released: trigger.left_event
+
+    # LB+RB+RT+Y
+    - output: btn_10=42
+      when:
+        - shoulder.left_event
+        - shoulder.right_event
+        - trigger.right_event
+        - button.y_event
+        - released: trigger.left_event
+
+    # LB+LT+RT+A
+    - output: btn_10=43
+      when:
+        - shoulder.left_event
+        - trigger.left_event
+        - trigger.right_event
+        - button.a_event
+        - released: shoulder.right_event
+
+    # LB+LT+RT+B
+    - output: btn_10=44
+      when:
+        - shoulder.left_event
+        - trigger.left_event
+        - trigger.right_event
+        - button.b_event
+        - released: shoulder.right_event
+
+    # LB+LT+RT+X
+    - output: btn_10=45
+      when:
+        - shoulder.left_event
+        - trigger.left_event
+        - trigger.right_event
+        - button.x_event
+        - released: shoulder.right_event
+
+    # LB+LT+RT+Y
+    - output: btn_10=46
+      when:
+        - shoulder.left_event
+        - trigger.left_event
+        - trigger.right_event
+        - button.y_event
+        - released: shoulder.right_event
+
+    # RB+LT+RT+A
+    - output: btn_10=47
+      when:
+        - shoulder.right_event
+        - trigger.left_event
+        - trigger.right_event
+        - button.a_event
+        - released: shoulder.left_event
+
+    # RB+LT+RT+B
+    - output: btn_10=48
+      when:
+        - shoulder.right_event
+        - trigger.left_event
+        - trigger.right_event
+        - button.b_event
+        - released: shoulder.left_event
+
+    # RB+LT+RT+X
+    - output: btn_10=49
+      when:
+        - shoulder.right_event
+        - trigger.left_event
+        - trigger.right_event
+        - button.x_event
+        - released: shoulder.left_event
+
+    # RB+LT+RT+Y
+    - output: btn_10=50
+      when:
+        - shoulder.right_event
+        - trigger.left_event
+        - trigger.right_event
+        - button.y_event
+        - released: shoulder.left_event
+
+    # LB+RB+LT+RT+A
+    - output: btn_10=51
+      when:
+        - shoulder.left_event
+        - shoulder.right_event
+        - trigger.left_event
+        - trigger.right_event
+        - button.a_event
+
+    # LB+RB+LT+RT+B
+    - output: btn_10=52
+      when:
+        - shoulder.left_event
+        - shoulder.right_event
+        - trigger.left_event
+        - trigger.right_event
+        - button.b_event
+
+    # LB+RB+LT+RT+X
+    - output: btn_10=53
+      when:
+        - shoulder.left_event
+        - shoulder.right_event
+        - trigger.left_event
+        - trigger.right_event
+        - button.x_event
+
+    # LB+RB+LT+RT+Y
+    - output: btn_10=54
+      when:
+        - shoulder.left_event
+        - shoulder.right_event
+        - trigger.left_event
+        - trigger.right_event
+        - button.y_event
+
+
+#自定义命令
 system:
   start:
     - "mkdir -p /var/log/bxi_log/imu"
-    - "ros2 launch bxi_example_py_elf3 example_demo_hw.launch.py enable_imu:=false > /var/log/bxi_log/test_$(date +%Y-%m-%d_%H-%M-%S)_elf.log 2>&1 &"
+    # The external bxi_imu process owns the HiPNUC serial device. Explicitly
+    # disable the legacy hardware reader so both nodes cannot read it.
+    - "ros2 launch bxi_example_py_elf3 example_demo_hw.launch.py enable_imu:=false > /var/log/bxi_log/$(date +%Y-%m-%d_%H-%M-%S)_elf.log 2>&1 &"
+    # Wait for an actual hardware IMU sample. Fall back to bxi_imu only when
+    # no sample arrives and the real tty is not owned by another process.
     - "bash -c 'imu_log=/var/log/bxi_log/imu/imu_$(date +%Y-%m-%d_%H-%M-%S).log; exec \"$(ros2 pkg prefix remote_controller)/share/remote_controller/scripts/start_imu_if_owned.sh\" \"$imu_log\"' > /var/log/bxi_log/imu/guard_$(date +%Y-%m-%d_%H-%M-%S).log 2>&1 &"
     - "ros2 launch bxi_example_bms bms.launch.py > /var/log/bxi_log/bms_$(date +%Y-%m-%d_%H-%M-%S)_bms.log 2>&1 &"
-  start_hardware:
-    - "mkdir -p /var/log/bxi_log/imu"
-    - "bash -c 'stamp=$(date +%Y-%m-%d_%H-%M-%S); log=/var/log/bxi_log/test_${stamp}_elf.log; ln -s \"$log\" /var/log/bxi_log/imu/imu_${stamp}.log; exec ros2 launch bxi_example_py_elf3 example_demo_hw.launch.py enable_imu:=true > \"$log\" 2>&1' &"
-    - "ros2 launch bxi_example_bms bms.launch.py > /var/log/bxi_log/bms_$(date +%Y-%m-%d_%H-%M-%S)_bms.log 2>&1 &"
+    - "su bxi -c \"cd /home/bxi/bxi_ws/bxi_voice && ./bin/bxi-voice\" 2>&1 &"
   stop:
-    - "pkill -SIGINT -f '[r]os2 launch bxi_example_py_elf3 example_demo_hw[.]launch[.]py|[h]ardware_elf3|[b]xi_example_py_elf3_demo|[/]start_imu_if_owned[.]sh|[/]imu_publisher_guard|[r]os2 launch bxi_imu imu[.]launch[.]py|[/]imu_node' || true"
-    - "pkill -SIGINT -f '[r]os2 launch bxi_example_bms bms[.]launch[.]py|[/]bxi_bms|[/]bxi_example_bms' || true"
-    - "sleep 2"
-    - "pkill -SIGTERM -f '[r]os2 launch bxi_example_py_elf3 example_demo_hw[.]launch[.]py|[h]ardware_elf3|[b]xi_example_py_elf3_demo|[/]start_imu_if_owned[.]sh|[/]imu_publisher_guard|[r]os2 launch bxi_imu imu[.]launch[.]py|[/]imu_node' || true"
+    # App/API shutdown must use the same ordered helper: stop controller and
+    # hardware first, and keep IMU data alive until those processes exit.
+    - 'bash "$(ros2 pkg prefix remote_controller)/share/remote_controller/scripts/stop_robot.sh"'
 
+#互斥定义，只能acquire一次，但是可以release多次
 system_mutexes:
   robot_process:
-    acquire: [start, start_hardware]
+    acquire: start
     release: stop
 
+#重置摇杆的滤波器
 system_reset_motion_after:
   - start
-  - start_hardware
   - stop

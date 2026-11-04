@@ -885,19 +885,9 @@ void load_system_mutexes(const YAML::Node &node, RemoteConfig &config)
         SystemMutexConfig mutex;
         mutex.name = item.first.as<std::string>();
         require_map(item.second, "system_mutexes." + mutex.name);
-        const YAML::Node acquire = item.second["acquire"];
-        if (acquire.IsScalar()) {
-            mutex.acquire.push_back(acquire.as<std::string>());
-        } else if (acquire.IsSequence()) {
-            for (const auto &action : acquire) {
-                mutex.acquire.push_back(action.as<std::string>());
-            }
-        }
+        mutex.acquire = get_or<std::string>(item.second, "acquire", "");
         mutex.release = get_or<std::string>(item.second, "release", "");
-        if (mutex.name.empty() || mutex.acquire.empty() ||
-            std::any_of(mutex.acquire.begin(), mutex.acquire.end(),
-                [](const std::string &action) { return action.empty(); }) ||
-            mutex.release.empty()) {
+        if (mutex.name.empty() || mutex.acquire.empty() || mutex.release.empty()) {
             throw std::runtime_error("system_mutexes." + mutex.name + " must contain acquire and release");
         }
         config.system_mutexes.push_back(mutex);
@@ -1257,10 +1247,8 @@ void validate_config(RemoteConfig &config)
     }
 
     for (const auto &mutex : config.system_mutexes) {
-        for (const auto &action : mutex.acquire) {
-            if (config.system_commands.count(action) == 0) {
-                throw std::runtime_error("system_mutexes." + mutex.name + ".acquire references unknown action: " + action);
-            }
+        if (config.system_commands.count(mutex.acquire) == 0) {
+            throw std::runtime_error("system_mutexes." + mutex.name + ".acquire references unknown action");
         }
         if (config.system_commands.count(mutex.release) == 0) {
             throw std::runtime_error("system_mutexes." + mutex.name + ".release references unknown action");

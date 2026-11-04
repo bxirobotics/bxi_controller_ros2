@@ -7,6 +7,7 @@ class SuspendedRunningState(ButtonControlState):
     name = "running"
     button = "X"
     message_field = "btn_9"
+    button_value = 1
     source = "remote X button"
 
     def is_active(self, node):
@@ -52,6 +53,7 @@ class SuspendedVibrationState(ButtonControlState):
     name = "vibration"
     button = "Y"
     message_field = "btn_10"
+    button_value = 12
     source = "remote Y button"
 
     def is_active(self, node):
@@ -124,7 +126,8 @@ class SuspendedVibrationState(ButtonControlState):
 class SuspendedLimbTestState(ButtonControlState):
     name = "whole_body_joint_test"
     button = "A"
-    message_field = "btn_7"
+    message_field = "btn_10"
+    button_value = 11
     source = "remote A button"
 
     def is_active(self, node):

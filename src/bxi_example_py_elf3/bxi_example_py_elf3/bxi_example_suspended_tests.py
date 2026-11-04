@@ -313,7 +313,9 @@ class SuspendedTestNode(VibrationTestNode):
         activated_states = []
         with self.state_lock:
             for button_edge, button_state in self.remote_button_states:
-                pressed = getattr(msg, button_state.message_field) != 0
+                value = getattr(msg, button_state.message_field)
+                expected = button_state.button_value
+                pressed = value != 0 if expected is None else value == expected
                 if button_edge.update(pressed, now):
                     activated_states.append(button_state)
 

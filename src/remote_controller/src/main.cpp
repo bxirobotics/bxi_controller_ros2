@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <map>
@@ -21,11 +20,9 @@ public:
     COMPublisher(
         const std::string &config_path,
         const std::string &driver_filter,
-        bool driver_debug_enabled,
-        bool disable_system_actions)
+        bool driver_debug_enabled)
         : Node("COM_publisher"),
-          mapper_(remote_controller::load_remote_config(config_path)),
-          disable_system_actions_(disable_system_actions)
+          mapper_(remote_controller::load_remote_config(config_path))
     {
         print_config_diagnostics(mapper_.config());
         com_pub_ = this->create_publisher<communication::msg::MotionCommands>(
@@ -57,7 +54,6 @@ public:
 private:
     mutable std::mutex lock_;
     InputMapper mapper_;
-    bool disable_system_actions_ = false;
     std::unique_ptr<remote_controller::InputDeviceManager> input_manager_;
     std::map<std::string, bool> system_mutex_locked_;
     bool has_last_published_payload_ = false;
@@ -112,9 +108,7 @@ private:
     {
         for (const auto &output : outputs) {
             if (remote_controller::starts_with(output, "system.")) {
-                if (!disable_system_actions_) {
-                    run_system_action(output.substr(std::string("system.").size()));
-                }
+                run_system_action(output.substr(std::string("system.").size()));
             } else if (!output.empty()) {
                 RCLCPP_WARN(this->get_logger(), "unknown binding output: %s", output.c_str());
             }
@@ -161,8 +155,7 @@ private:
     std::string blocking_system_mutex_locked(const std::string &action) const
     {
         for (const auto &mutex : mapper_.config().system_mutexes) {
-            if (std::find(mutex.acquire.begin(), mutex.acquire.end(), action) ==
-                mutex.acquire.end()) {
+            if (mutex.acquire != action) {
                 continue;
             }
             const auto lock_it = system_mutex_locked_.find(mutex.name);
@@ -179,8 +172,7 @@ private:
             if (mutex.release == action) {
                 system_mutex_locked_[mutex.name] = false;
             }
-            if (std::find(mutex.acquire.begin(), mutex.acquire.end(), action) !=
-                mutex.acquire.end()) {
+            if (mutex.acquire == action) {
                 system_mutex_locked_[mutex.name] = true;
             }
         }
@@ -200,7 +192,6 @@ int main(int argc, const char *argv[])
     std::string driver_filter;
     std::string config_path;
     bool driver_debug_enabled = false;
-    bool disable_system_actions = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -213,8 +204,6 @@ int main(int argc, const char *argv[])
             config_path = argv[++i];
         } else if (arg == "--DEBUG" || arg == "--debug") {
             driver_debug_enabled = true;
-        } else if (arg == "--disable-system-actions") {
-            disable_system_actions = true;
         }
     }
 
@@ -227,8 +216,7 @@ int main(int argc, const char *argv[])
     rclcpp::spin(std::make_shared<COMPublisher>(
         config_path,
         driver_filter,
-        driver_debug_enabled,
-        disable_system_actions));
+        driver_debug_enabled));
     rclcpp::shutdown();
 
     return 0;

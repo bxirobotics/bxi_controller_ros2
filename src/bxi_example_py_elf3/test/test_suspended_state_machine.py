@@ -236,9 +236,9 @@ def test_test_mode_has_one_button_exit_and_ignores_basic_mode_buttons():
     config = yaml.safe_load(
         (_STATES_PATH.parent / "mod.yaml").read_text(encoding="utf-8")
     )
-    assert config["events"]["test_mode"] == {"slot": "btn_8", "value": 1}
-    assert config["events"]["exit_test_mode"] == {"slot": "btn_8", "value": 2}
-    assert config["events"]["sequence"] == {"slot": "btn_9", "value": 2}
+    assert config["events"]["test_mode"] == {"slot": "btn_10", "value": 10}
+    assert config["events"]["exit_test_mode"] == {"slot": "btn_10", "value": 14}
+    assert config["events"]["sequence"] == {"slot": "btn_1", "value": 2}
     action_by_state = {action["from"]: action for action in config["actions"]}
     for source, event in (
         ("running", "running"),
@@ -263,8 +263,8 @@ def test_test_mode_has_one_button_exit_and_ignores_basic_mode_buttons():
         "test_mode": config["events"]["test_mode"],
         "exit_test_mode": config["events"]["exit_test_mode"],
     })
-    assert adapter.extract_events(SimpleNamespace(btn_8=1)) == ["test_mode"]
-    assert adapter.extract_events(SimpleNamespace(btn_8=2)) == ["exit_test_mode"]
+    assert adapter.extract_events(SimpleNamespace(btn_10=10)) == ["test_mode"]
+    assert adapter.extract_events(SimpleNamespace(btn_10=14)) == ["exit_test_mode"]
 
 
 def _temperature_sample(*, names=JOINT_NAMES, motor=None, driver=None, age=0.0):
@@ -535,7 +535,7 @@ def test_b_sequence_manual_exit_after_running_logs_success():
         session, "sequence_exit_requested", state == _STATES.SEQUENCE_RUNNING,
     ))
     guard(
-        SimpleNamespace(btn_8=2), ["com.bxi.suspended_tests/exit_test_mode"],
+        SimpleNamespace(btn_10=14), ["com.bxi.suspended_tests/exit_test_mode"],
         _STATES.SEQUENCE_RUNNING,
     )
     session.observe_sequence_state(_STATES.ZERO_TORQUE)
@@ -936,7 +936,7 @@ def test_test_exit_does_not_trigger_pd_when_left_shoulder_is_released_first():
     from bxi_example_py_elf3.bxi_example_demo import BxiExample
 
     adapter = RemoteEventAdapter({
-        "com.bxi.suspended_tests/exit_test_mode": {"slot": "btn_8", "value": 2},
+        "com.bxi.suspended_tests/exit_test_mode": {"slot": "btn_10", "value": 14},
         "com.bxi.basic_actions/pd_brake": {"slot": "btn_3", "value": 1},
         "com.bxi.basic_actions/initial_pos": {"slot": "btn_4", "value": 1},
     })
@@ -955,27 +955,27 @@ def test_test_exit_does_not_trigger_pd_when_left_shoulder_is_released_first():
         pending_remote_events=deque(),
     )
 
-    def send(btn_8=0, btn_3=0, btn_4=0):
+    def send(btn_1=0, btn_3=0, btn_4=0, btn_10=0):
         msg = SimpleNamespace(
-            btn_8=btn_8, btn_3=btn_3, btn_4=btn_4,
+            btn_1=btn_1, btn_3=btn_3, btn_4=btn_4, btn_10=btn_10,
             vel_des=SimpleNamespace(x=0.0, y=0.0), yawdot_des=0.0,
         )
         BxiExample.joy_callback(node, msg)
 
     send(btn_4=1)
     assert list(node.pending_remote_events) == []
-    send(btn_8=2)
+    send(btn_10=14)
     assert list(node.pending_remote_events) == ["com.bxi.suspended_tests/exit_test_mode"]
     node.pending_remote_events.clear()
     state[0] = _STATES.ZERO_TORQUE
-    send(btn_8=3, btn_3=1)
+    send(btn_1=2, btn_3=1)
     assert list(node.pending_remote_events) == []
-    send(btn_8=3, btn_3=1, btn_4=1)
+    send(btn_1=2, btn_3=1, btn_4=1)
     assert list(node.pending_remote_events) == []
-    send(btn_8=3)
+    send(btn_1=2)
     assert list(node.pending_remote_events) == []
     send()
-    send(btn_8=3, btn_3=1)
+    send(btn_1=2, btn_3=1)
     assert list(node.pending_remote_events) == ["com.bxi.basic_actions/pd_brake"]
 
 
@@ -988,9 +988,9 @@ def test_test_exit_waits_for_all_button_slots_to_be_neutral():
         message = SimpleNamespace(**buttons)
         return guard(message, events, state)
 
-    assert filtered(test_state, [_GUARD._EXIT], btn_8=2) == [_GUARD._EXIT]
-    assert filtered(basic_state, ["com.bxi.basic_actions/pd_brake"], btn_8=2) == []
-    assert filtered(basic_state, [], btn_8=3) == []
+    assert filtered(test_state, [_GUARD._EXIT], btn_10=14) == [_GUARD._EXIT]
+    assert filtered(basic_state, ["com.bxi.basic_actions/pd_brake"], btn_10=14) == []
+    assert filtered(basic_state, [], btn_1=2) == []
     assert filtered(basic_state, ["com.bxi.basic_actions/initial_pos"], btn_4=1) == []
     assert filtered(basic_state, ["com.bxi.basic_actions/pd_brake"], btn_3=1) == []
     assert filtered(basic_state) == []

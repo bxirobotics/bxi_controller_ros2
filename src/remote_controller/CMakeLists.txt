@@ -28,15 +28,21 @@ find_package(yaml-cpp REQUIRED)
 # find_package(<dependency> REQUIRED)
 
 if(BUILD_TESTING)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(NAME remote_controller_ordered_stop_test
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_stop_robot.py)
+  add_executable(remote_controller_imu_receive_diagnostics_test
+    test/imu_receive_diagnostics_test.cpp)
+  target_include_directories(remote_controller_imu_receive_diagnostics_test PRIVATE include)
+  add_test(NAME remote_controller_imu_receive_diagnostics_test
+    COMMAND remote_controller_imu_receive_diagnostics_test)
   find_package(ament_lint_auto REQUIRED)
-  # The lightweight branch keeps dev's controller framework without taking on
-  # its full style-cleanup scope; keep BUILD_TESTING focused on behavior.
-  set(ament_cmake_copyright_FOUND TRUE)
-  set(ament_cmake_cpplint_FOUND TRUE)
-  set(ament_cmake_flake8_FOUND TRUE)
-  set(ament_cmake_lint_cmake_FOUND TRUE)
-  set(ament_cmake_pep257_FOUND TRUE)
-  set(ament_cmake_uncrustify_FOUND TRUE)
+  # the following line skips the linter which checks for copyrights
+  # uncomment the line when a copyright and license is not present in all source files
+  #set(ament_cmake_copyright_FOUND TRUE)
+  # the following line skips cpplint (only works in a git repo)
+  # uncomment the line when this package is not in a git repo
+  #set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
 
   add_executable(${PROJECT_NAME}_crsf_frame_parser_test
@@ -93,6 +99,7 @@ target_link_libraries(${PROJECT_NAME} ${PROJECT_NAME}_core)
 add_executable(imu_publisher_guard
   src/imu_publisher_guard.cpp
 )
+target_include_directories(imu_publisher_guard PRIVATE include)
 ament_target_dependencies(imu_publisher_guard rclcpp sensor_msgs)
 
 install(TARGETS ${PROJECT_NAME}_core ${PROJECT_NAME} imu_publisher_guard
@@ -110,7 +117,7 @@ install(DIRECTORY launch
 install(DIRECTORY config
          DESTINATION share/${PROJECT_NAME})
 
-install(PROGRAMS scripts/start_imu_if_owned.sh
+install(PROGRAMS scripts/start_imu_if_owned.sh scripts/stop_robot.sh
         DESTINATION share/${PROJECT_NAME}/scripts)
 
 ament_export_include_directories(include)

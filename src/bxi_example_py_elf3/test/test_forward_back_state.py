@@ -72,6 +72,10 @@ def test_shared_normal_policy_is_not_reset_on_mode_switch(states):
 
 def test_mode_is_reachable_only_from_normal_and_buttons_keep_safety_routes():
     config = yaml.safe_load((MOD_ROOT / "mod.yaml").read_text())
+    assert config["events"]["forward_back"] == {
+        "slot": "btn_10",
+        "value": 9,
+    }
     assert config["states"]["forward_back"]["params"] == {
         "speed": 0.5,
         "backward_speed": 0.5,

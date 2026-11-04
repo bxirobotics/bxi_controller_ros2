@@ -18,12 +18,14 @@ runtime_requirements:
   system: []
 
 events:
-  test_mode: {slot: btn_8, value: 1}
-  exit_test_mode: {slot: btn_8, value: 2}
+  # Keep the physical test combinations from robot_test while consuming the
+  # stable btn values published by origin/dev's remote_controller.
+  test_mode: {slot: btn_10, value: 10}
+  exit_test_mode: {slot: btn_10, value: 14}
   running: {slot: btn_9, value: 1}
-  vibration: {slot: btn_10, value: 1}
-  whole_body_joint_test: {slot: btn_7, value: 1}
-  sequence: {slot: btn_9, value: 2}
+  vibration: {slot: btn_10, value: 12}
+  whole_body_joint_test: {slot: btn_10, value: 11}
+  sequence: {slot: btn_1, value: 2}
 
 states:
   idle:
