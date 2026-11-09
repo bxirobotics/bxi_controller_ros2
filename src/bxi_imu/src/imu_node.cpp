@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -36,6 +37,7 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include "bxi_imu/imu_backend.hpp"
+#include "bxi_imu/device_setup.hpp"
 #include "bxi_imu/probe.hpp"
 #include "bxi_imu/sample_freshness.hpp"
 
@@ -48,7 +50,7 @@ public:
   explicit ImuNode(const rclcpp::NodeOptions & options)
   : Node("imu_node", options)
   {
-    driver_ = declare_parameter<std::string>("driver", "hipnuc");
+    driver_ = declare_parameter<std::string>("driver", "auto");
     port_ = declare_parameter<std::string>("port", "/dev/ttyIMU");
     baudrate_ = declare_parameter<int>("baudrate", 921600);
     frame_id_ = declare_parameter<std::string>("frame_id", "imu_link");
@@ -89,8 +91,7 @@ public:
       "imu_candidates",
       std::vector<std::string>{
         "hipnuc|/dev/ttyIMU|921600|identity|500.0|2.5",
-        "yesense|/dev/ttyIMU|921600|-y,x,z|200.0|2.5",
-        "yesense|/dev/ttyIMU_YESENSE_1|921600|-y,x,z|200.0|2.5"});
+        "yesense|/dev/ttyIMU|921600|-y,x,z|200.0|2.5"});
 
     if (probe_timeout_ms_ < 100 || probe_min_frames_ < 2) {
       RCLCPP_ERROR(get_logger(), "invalid IMU probe settings: timeout_ms=%d min_frames=%d",
@@ -119,6 +120,15 @@ public:
     if (driver_ == "auto" || port_ == "auto") {
       select_backend_from_candidates();
     } else {
+      if (driver_ == "hipnuc" || driver_ == "yesense") {
+        try {
+          prepare_imu_device(port_, driver_, get_logger());
+          baudrate_ = 921600;
+        } catch (const std::exception & error) {
+          RCLCPP_ERROR(get_logger(), "IMU setup failed: %s", error.what());
+          return;
+        }
+      }
       for (const auto & entry : imu_candidates_) {
         CandidateConfig candidate_config;
         if (parse_candidate(entry, candidate_config) &&
@@ -139,6 +149,8 @@ public:
         driver_.c_str(), port_.c_str());
       return;
     }
+    if (driver_ == "hipnuc") {imu_frequency_hz_ = 500.0;}
+    if (driver_ == "yesense") {imu_frequency_hz_ = 200.0;}
     apply_record_enabled_override();
     if (!std::isfinite(quaternion_norm_tolerance_) ||
       quaternion_norm_tolerance_ < 0.0 || quaternion_norm_tolerance_ >= 1.0)
@@ -397,6 +409,7 @@ private:
     });
 
     int attempted = 0;
+    std::map<std::string, std::string> prepared_ports;
     for (const auto & candidate_config : candidates) {
       if ((driver_ != "auto" && driver_ != candidate_config.driver) ||
         (port_ != "auto" && port_ != candidate_config.port))
@@ -411,8 +424,18 @@ private:
         candidate_config.priority, probe_timeout_ms_, probe_min_frames_);
 
       try {
+        if (candidate_config.driver == "hipnuc" || candidate_config.driver == "yesense") {
+          auto prepared = prepared_ports.emplace(candidate_config.port, "");
+          if (prepared.second) {
+            prepared.first->second = prepare_imu_device(
+              candidate_config.port, driver_, get_logger());
+          }
+          if (prepared.first->second != candidate_config.driver) {continue;}
+        }
+        const int candidate_baud = candidate_config.driver == "hipnuc" ||
+          candidate_config.driver == "yesense" ? 921600 : candidate_config.baudrate;
         auto candidate = create_backend(
-          candidate_config.driver, candidate_config.port, candidate_config.baudrate, get_logger());
+          candidate_config.driver, candidate_config.port, candidate_baud, get_logger());
         if (!candidate) {
           RCLCPP_WARN(get_logger(), "IMU probe failed: driver=%s port=%s reason=module_unavailable",
             candidate_config.driver.c_str(), candidate_config.port.c_str());
@@ -443,7 +466,7 @@ private:
         }
         driver_ = candidate_config.driver;
         port_ = candidate_config.port;
-        baudrate_ = candidate_config.baudrate;
+        baudrate_ = candidate_baud;
         apply_candidate_config(candidate_config);
         backend_ = std::move(candidate);
         RCLCPP_INFO(get_logger(),

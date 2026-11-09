@@ -52,26 +52,36 @@ modules/
 
 每个厂商仍由自己的 `modules/<厂商>/config.yaml` 配置。`port` 是首选端口，
 `fallback_ports` 可列出备用端口；同一端口上的厂商按 `priority` 从小到大
-依次探测。探测要求在限定时间内连续收到 3 帧协议解析成功、四元数及运动
-数据有效的帧。未通过时会关闭串口，再尝试下一个候选，不会仅凭串口打开
-成功认定型号。
+选择模块。节点先在 921600、115200、460800 三档波特率下查询设备身份：
+超核校验 `LOG VERSION` 的型号应答，元生校验产品信息参数帧的类别、操作与
+校验和，不按 USB 芯片身份判定厂商。识别后读回波特率及输出频率，只修改
+不符合目标的配置并保存：两种设备均为 921600，元生 200 Hz，超核 HI91 500 Hz。
+配置正确时不会重复写 Flash；配置失败、设备拒绝或读回不符时退出。
+
+身份查询先用每次 100 ms 的快速窗口扫描三档波特率，均未识别才用 500 ms
+窗口重试，以兼容应答较慢的固件。取消每档波特率固定等待，仅原生 USB CDC
+打开后等待一次 150 ms。波特率切换与重启可能丢失的 ACK 最多等待 100 ms；
+其余配置应答、读回超时及超核保存后的重启等待保留。
+
+随后仍要求在限定时间内连续收到 3 帧协议解析成功、四元数及运动数据有效的帧，
+才开始发布。已确认身份的串口不会再尝试另一厂商的解码器。
 
 当前顺序是：
 
 ```text
 /dev/ttyIMU              -> hipnuc  (priority: 0)
 /dev/ttyIMU              -> yesense (priority: 1)
-/dev/ttyIMU_YESENSE_1    -> yesense (备用端口)
 ```
 
-先完成所有 `/dev/ttyIMU` 的协议探测，再尝试其他端口；其他端口仍使用
-对应模块自己的协议。两个厂商当前均为 921600 波特率。无候选通过时节点
+先完成 `/dev/ttyIMU` 的身份识别与配置，再尝试其他端口；模块自己的轴向及
+数据校验设置继续生效。`baudrate` 配置不改变固定的设备目标 921600。无候选通过时节点
 打印逐项失败原因并以错误状态退出，不发布 IMU 数据。启动日志由遥控器的
 IMU guard 写入 `/var/log/bxi_log/imu/imu_*.log`。`no_valid_protocol_frames_or_no_data`
 表示指定时间内没有可解码帧，单凭这一条不能区分无串口数据与协议不匹配。
 
 可用 `probe_timeout_ms`（默认 1200）及 `probe_min_frames`（默认 3）
-调整探测窗口和确认帧数。坐标轴可以在对应模块的 `config.yaml` 中配置，
+调整配置完成后的数据探测窗口和确认帧数，参数身份查询不受这两个参数影响。
+坐标轴可以在对应模块的 `config.yaml` 中配置，
 格式为目标坐标系的
 `x,y,z` 分量分别取设备的哪个轴，可加 `-` 表示取反，例如：
 
@@ -81,15 +91,19 @@ axis_mapping: "-y,x,z"
 
 表示 `robot_x=-imu_y`、`robot_y=imu_x`、`robot_z=imu_z`。三个轴必须各使用一次，且必须构成右手坐标系。
 
-udev 规则必须创建与配置一致的软连接。备用别名不存在时会记录
-`open_failed`，不会影响已选中的主端口。若已安装旧版 `bxi-dev.rules`，请先备份并移出 `/etc/udev/rules.d/`。修改规则后执行：
+默认两种 IMU 都使用 `/dev/ttyIMU`，不再生成厂商专用别名。规则只按
+`10c4:ea60`（ttyUSB）或 `5953:5543`（ttyACM）匹配，不限制架构和物理 USB 口。
+映射助手保留当前有效设备，拔出后选取其他匹配设备，无设备时清除链接。
+开机 oneshot 服务负责扫描已有设备，udev 负责 add/change/remove 事件。
+在仓库根目录统一安装规则、助手与开机服务（会备份移出旧 `bxi-dev.rules`）：
 
 ```bash
-sudo install -m 0644 script/udev/70-bxi-imu.rules /etc/udev/rules.d/
-sudo udevadm control --reload-rules
-sudo udevadm trigger --subsystem-match=tty --action=add
-ls -l /dev/ttyIMU*
+bash script/deploy_device_links.sh
+ls -l /dev/ttyIMU
 ```
+
+参数及多设备限制见 [设备链接说明](../../script/README.md)。重新映射不会让已运行的
+串口读取进程自动重连；拔插后需按正常 Stop/Start 流程重新启动 IMU 进程。
 
 ## 编译和启动
 
@@ -113,7 +127,7 @@ ros2 launch bxi_imu imu.launch.py \
   driver:=hipnuc port:=/dev/ttyIMU baudrate:=921600
 
 ros2 launch bxi_imu imu.launch.py \
-  driver:=yesense port:=/dev/ttyIMU_YESENSE_1 baudrate:=921600
+  driver:=yesense port:=/dev/ttyIMU baudrate:=921600
 ```
 
 ### 控制 IMU CSV 记录

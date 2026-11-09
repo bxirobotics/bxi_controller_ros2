@@ -64,6 +64,8 @@ USD 或 XML 格式请参考：[unofficial models](https://github.com/MelodyAI/Ti
 
 ```bash
 sudo install -m 0755 ./script/bxi-battle-dragon-link /usr/local/bin/bxi-battle-dragon-link
+sudo install -m 0755 ./script/bxi-imu-link /usr/local/bin/bxi-imu-link
+sudo install -m 0644 ./script/bxi-imu-link.service /etc/systemd/system/
 ```
 
 4. 安装 IMU、BAT 和遥控器三份 udev 规则，并重新加载。若已安装旧版 `/etc/udev/rules.d/bxi-dev.rules`，请先备份并移出该目录，避免与新规则同时生效：
@@ -73,9 +75,13 @@ sudo install -m 0644 ./script/udev/70-bxi-*.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=tty --action=add
 sudo udevadm trigger --subsystem-match=input --action=add
+sudo udevadm settle --timeout=20
+sudo systemctl daemon-reload
+sudo systemctl enable bxi-imu-link.service
+sudo systemctl restart bxi-imu-link.service
 ```
 
-规则按 `uname -m` 区分 `x86_64` 与 `aarch64`，分别使用 `3-8`/`3-9` 与 `4-1.7`/`5-1`。IMU 和 BAT 在各自架构的两个端口都可匹配，设备类型由 USB VID/PID 区分。
+IMU 按 USB VID/PID 匹配，不区分架构或物理 USB 口，统一映射为 `/dev/ttyIMU`。开机服务扫描已有设备，udev 在插拔或 change 事件时更新映射；已有有效映射会保留。BAT 继续使用原有架构和端口限制。也可运行 `bash script/deploy_device_links.sh` 一次安装上述文件并启用 IMU 开机扫描。
 
 重新插拔 Battle Dragon 手柄后，应能看到 `/dev/input/jsBattleDragon`。如果只是本地调试，也可以临时将 `src/remote_controller/config/xbox_default.yaml` 中的 `sources.gamepad.device` 改成当前系统对应的 `/dev/input/js0`。
 

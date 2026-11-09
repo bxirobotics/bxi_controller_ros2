@@ -28,6 +28,7 @@ find_package(geometry_msgs REQUIRED)
 add_executable(imu_node
   src/imu_node.cpp
   src/backend_factory.cpp
+  src/device_setup.cpp
 )
 target_include_directories(imu_node PRIVATE
   include

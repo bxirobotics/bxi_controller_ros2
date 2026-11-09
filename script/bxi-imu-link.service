@@ -1,0 +1,11 @@
+[Unit]
+Description=Restore the BXI IMU serial link
+After=systemd-udev-trigger.service
+Before=ros_elf_launch.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/bxi-imu-link scan
+
+[Install]
+WantedBy=multi-user.target
