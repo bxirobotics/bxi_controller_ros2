@@ -19,6 +19,7 @@
 `usr_pro.sh` 和 `test_pro.sh` 均无参数调用 `deploy_device_links.sh`，自动安装
 IMU 链接助手、udev 规则和 `bxi-imu-link.service`，重载规则并启用、运行开机
 扫描服务；随后通过 `deploy_autostart.sh` 安装并启用 ROS 自启动服务。
+两个入口沿用旧脚本的内置密码自动完成sudo验证，子Bash脚本同样无需手动输入。
 多匹配设备保留当前有效映射，拔插后读取进程仍需正常 Stop/Start 重开串口。
 
 下载工具需要 Bash、`curl` 或 `wget`。执行 `./download_imu_tool.sh` 后运行
