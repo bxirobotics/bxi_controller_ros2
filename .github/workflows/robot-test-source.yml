@@ -38,3 +38,21 @@ jobs:
           source: bxi_rl_controller_ros2_example.tar.gz
           target: ${{ secrets.DEPLOY_PATH }}/${{ env.PACKAGE_NAME }}/robot_test
           overwrite: true
+
+      - name: Stage Deployment Scripts
+        run: |
+          bash -n script/usr_pro.sh script/test_pro.sh
+          install -Dm 0755 script/usr_pro.sh deployment-scripts/bxi_ws/usr_pro.sh
+          install -Dm 0755 script/test_pro.sh deployment-scripts/robot_test/test_pro.sh
+
+      - name: SCP Upload Deployment Scripts
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          source: deployment-scripts/bxi_ws/usr_pro.sh,deployment-scripts/robot_test/test_pro.sh
+          target: ${{ secrets.DEPLOY_PATH }}/${{ env.PACKAGE_NAME }}
+          strip_components: 1
+          overwrite: true

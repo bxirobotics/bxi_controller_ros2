@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PASSWORD=Bxi12345go
-
-sudo() {
-    printf '%s\n' "$PASSWORD" | command sudo -S -p '' "$@"
-}
-
 script_name="${BASH_SOURCE[0]##*/}"
 printf '[进入脚本] %s\n' "$script_name" >&2
 trap '
@@ -15,7 +9,8 @@ trap '
     exit "$script_status"
 ' EXIT
 
-script_dir="${1:?usage: deploy_device_links.sh PROJECT_SCRIPT_DIR}"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+(($# == 0)) || { echo "usage: deploy_device_links.sh (no arguments)" >&2; exit 2; }
 for name in bxi-battle-dragon-link udev/70-bxi-{bat,imu,remote}.rules; do
     [[ -f "$script_dir/$name" ]] || { echo "missing $script_dir/$name" >&2; exit 1; }
 done

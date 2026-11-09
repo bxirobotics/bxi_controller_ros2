@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PASSWORD=Bxi12345go
-
-sudo() {
-    printf '%s\n' "$PASSWORD" | command sudo -S -p '' "$@"
-}
-
 script_name="${BASH_SOURCE[0]##*/}"
 printf '[进入脚本] %s\n' "$script_name" >&2
 trap '
@@ -17,11 +11,18 @@ trap '
 ' EXIT
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-template="${1:?usage: deploy_autostart.sh SERVICE_TEMPLATE ROS_DOMAIN_ID}"
-domain="${2:?usage: deploy_autostart.sh SERVICE_TEMPLATE ROS_DOMAIN_ID}"
+(($# == 0)) || { echo "usage: deploy_autostart.sh (no arguments)" >&2; exit 2; }
+template="$script_dir/ros_elf_launch.service"
+short_hostname="$(hostname)"
+short_hostname="${short_hostname%%.*}"
+[[ "$short_hostname" =~ ([0-9]+)$ ]] || { echo "hostname lacks numeric suffix: $short_hostname" >&2; exit 1; }
+device_id="${BASH_REMATCH[1]}"
+((${#device_id} <= 3)) || { echo "device id out of range: $device_id" >&2; exit 1; }
+domain=$((10#$device_id + 30))
+((domain <= 232)) || { echo "ROS_DOMAIN_ID out of range: $domain" >&2; exit 1; }
 service=ros_elf_launch.service
-mode="${3:-deploy}"
-[[ $# -le 3 && "$mode" =~ ^(deploy|prepare|start)$ ]] || { echo 'mode must be deploy, prepare or start' >&2; exit 1; }
+mode="${BXI_AUTOSTART_MODE:-deploy}"
+[[ "$mode" =~ ^(deploy|prepare|start)$ ]] || { echo 'mode must be deploy, prepare or start' >&2; exit 1; }
 
 if [[ "$mode" != start ]]; then
     config="$(mktemp --suffix=.service)"
