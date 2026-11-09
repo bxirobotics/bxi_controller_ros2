@@ -64,6 +64,8 @@ For adding remote controllers or input controllers, robot business states, state
 
 ```bash
 sudo install -m 0755 ./script/bxi-battle-dragon-link /usr/local/bin/bxi-battle-dragon-link
+sudo install -m 0755 ./script/bxi-imu-link /usr/local/bin/bxi-imu-link
+sudo install -m 0644 ./script/bxi-imu-link.service /etc/systemd/system/
 ```
 
 4. Install the separate IMU, battery and remote-controller udev rules, then reload udev. If `/etc/udev/rules.d/bxi-dev.rules` is installed, back it up and move it out of the rules directory first:
@@ -73,9 +75,13 @@ sudo install -m 0644 ./script/udev/70-bxi-*.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=tty --action=add
 sudo udevadm trigger --subsystem-match=input --action=add
+sudo udevadm settle --timeout=20
+sudo systemctl daemon-reload
+sudo systemctl enable bxi-imu-link.service
+sudo systemctl restart bxi-imu-link.service
 ```
 
-The rules select USB paths by `uname -m`: `3-8`/`3-9` on `x86_64`, or `4-1.7`/`5-1` on the supported `aarch64` board. The IMU and battery may exchange ports; USB VID/PID distinguishes them.
+IMUs match by USB VID/PID on any architecture and USB port and share `/dev/ttyIMU`. The boot service scans existing devices; udev updates the mapping on add, change and remove events while retaining a valid target. Battery rules retain their architecture and port restrictions. Alternatively, run `bash script/deploy_device_links.sh` to install these files and enable the IMU boot scan.
 
 After reconnecting the Battle Dragon controller, `/dev/input/jsBattleDragon` should be available. For local debugging only, you can temporarily change `sources.gamepad.device` in `src/remote_controller/config/xbox_default.yaml` to the current system device, such as `/dev/input/js0`.
 

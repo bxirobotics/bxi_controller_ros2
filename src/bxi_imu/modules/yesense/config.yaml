@@ -1,11 +1,10 @@
 # Yesense module configuration.
-# Probe the shared port after HiPNUC, then try the dedicated Yesense alias.
+# Probe the shared IMU port after HiPNUC.
 imu_module:
   ros__parameters:
     driver: yesense
     port: /dev/ttyIMU
-    fallback_ports:
-      - /dev/ttyIMU_YESENSE_1
+    fallback_ports: []
     priority: 1
     baudrate: 921600
     frame_id: imu_link

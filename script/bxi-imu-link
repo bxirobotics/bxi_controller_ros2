@@ -1,0 +1,78 @@
+#!/bin/sh
+set -eu
+
+LINK="/dev/ttyIMU"
+LOCK="/run/lock/bxi-imu-link.lock"
+ACTION_NAME="${1:-scan}"
+KERNEL_NAME="${2:-}"
+
+case "$ACTION_NAME" in
+    add|change|remove)
+        case "$KERNEL_NAME" in
+            ttyUSB*) number="${KERNEL_NAME#ttyUSB}" ;;
+            ttyACM*) number="${KERNEL_NAME#ttyACM}" ;;
+            *) echo 'expected ttyUSB<N> or ttyACM<N>' >&2; exit 2 ;;
+        esac
+        case "$number" in
+            ''|*[!0-9]*) echo 'expected a numeric tty index' >&2; exit 2 ;;
+        esac
+        ;;
+    scan) ;;
+    *) echo 'usage: bxi-imu-link [scan|add|change|remove] [KERNEL_NAME]' >&2; exit 2 ;;
+esac
+
+is_imu() {
+    [ -e "$1" ] || return 1
+    # The udev rule is the single source of device matching criteria.
+    udevadm info --query=property --name="$1" 2>/dev/null | grep -qx 'BXI_IMU=1'
+}
+
+current_link_valid() {
+    [ -L "$LINK" ] || return 1
+    target="$(readlink -f "$LINK" 2>/dev/null)" || return 1
+    if [ "$ACTION_NAME" = remove ] && [ "${target##*/}" = "$KERNEL_NAME" ]; then
+        return 1
+    fi
+    is_imu "$target"
+}
+
+claim_first_available() {
+    for node in /dev/ttyUSB* /dev/ttyACM*; do
+        if [ "$ACTION_NAME" = remove ] && [ "${node##*/}" = "$KERNEL_NAME" ]; then
+            continue
+        fi
+        if is_imu "$node"; then
+            ln -sfnT "$node" "$LINK"
+            return 0
+        fi
+    done
+    if [ -L "$LINK" ]; then
+        rm -f "$LINK"
+    fi
+}
+
+handle_event() {
+    if [ -e "$LINK" ] && [ ! -L "$LINK" ]; then
+        echo "refusing to replace non-symlink $LINK" >&2
+        return 1
+    fi
+    if current_link_valid; then
+        return 0
+    fi
+    case "$ACTION_NAME" in
+        add|change)
+            # Matching udev rules validate the event even before its database update.
+            if [ -e "/dev/$KERNEL_NAME" ]; then
+                ln -sfnT "/dev/$KERNEL_NAME" "$LINK"
+                return 0
+            fi
+            ;;
+    esac
+    claim_first_available
+}
+
+mkdir -p /run/lock
+(
+    flock -x 9
+    handle_event
+) 9>"$LOCK"
