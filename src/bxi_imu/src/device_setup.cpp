@@ -243,7 +243,7 @@ bool hip_target(const std::string & config)
 {
   return field(config, "BAUD") == "921600" &&
          (field(config, "HI91") == "2" || field(config, "HI91") == "ONTIME=2" ||
-         field(config, "HI91, ONTIME") == "2");
+         field(config, "HI91, ONTIME") == "2" || field(config, "MSG=HI91, ONTIME") == "2");
 }
 
 void configure(Serial & serial, const std::string & driver, const rclcpp::Logger & logger)
