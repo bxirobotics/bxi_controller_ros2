@@ -156,6 +156,24 @@ jobs:
           target: ${{ secrets.DEPLOY_PATH }}/${{ env.PACKAGE_NAME }}/bxi_ws
           overwrite: true
 
+      - name: Stage Deployment Scripts
+        run: |
+          bash -n script/usr_pro.sh script/test_pro.sh
+          install -Dm 0755 script/usr_pro.sh deployment-scripts/bxi_ws/usr_pro.sh
+          install -Dm 0755 script/test_pro.sh deployment-scripts/robot_test/test_pro.sh
+
+      - name: SCP Upload Deployment Scripts
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          source: deployment-scripts/bxi_ws/usr_pro.sh,deployment-scripts/robot_test/test_pro.sh
+          target: ${{ secrets.DEPLOY_PATH }}/${{ env.PACKAGE_NAME }}
+          strip_components: 1
+          overwrite: true
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

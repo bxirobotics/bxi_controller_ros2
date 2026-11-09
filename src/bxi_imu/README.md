@@ -41,40 +41,46 @@ alias, baud rate, output topics, and validation settings. There is no shared
 The old shared IMU configuration directory is no longer used. The launch file
 scans module configurations and creates the candidate list automatically.
 
-## Priority selection
+## Automatic IMU selection
 
-The numeric suffix in a logical serial alias defines priority:
+Both modules use `/dev/ttyIMU`. Startup queries HiPNUC model responses or
+checksummed Yesense product replies at 921600, 115200, then 460800 baud.
+USB identity alone does not identify the protocol. Device parameters are read
+back and only mismatched settings are saved: 921600 baud for both, Yesense
+200 Hz, and HiPNUC HI91 500 Hz. Correct settings are not written again.
+Configuration rejection or readback failure stops startup. The `baudrate`
+parameter does not override this fixed device target.
 
-```text
-/dev/ttyIMU                    priority 0
-/dev/ttyIMU_YESENSE_1          priority 1
-/dev/ttyIMU_YESENSE_2          priority 2
-```
+Identity queries first sweep all three baud rates with 100 ms response windows,
+then retry with 500 ms windows only if none matched. Fixed waits between baud
+rates are removed; native USB CDC retains one 150 ms settling delay after open.
+HiPNUC baud-change and reboot ACKs, which may be lost, wait at most 100 ms;
+other configuration/readback timeouts and reboot settling remain unchanged.
 
-Lower numbers are tried first. The node opens candidates exclusively. If a
-device is absent, busy, or cannot be opened, the next candidate is tried.
+The selected decoder must then produce three consecutive valid protocol
+samples before publication. Module axis mappings and sample validation remain
+in effect. `probe_timeout_ms` and `probe_min_frames` control this final data
+probe, not identity queries. Custom deployments may still use `fallback_ports`.
 
-Current module settings:
+`axis_mapping` lists the source axis for target `x,y,z`, with an optional
+`-` sign. For example, `"-y,x,z"` means `robot_x=-imu_y`, `robot_y=imu_x`,
+and `robot_z=imu_z`. Each source axis must be used once in a right-handed rotation.
 
-```text
-hipnuc  -> /dev/ttyIMU             -> 921600 baud
-yesense -> /dev/ttyIMU_YESENSE_1   -> 921600 baud
-
-The `axis_mapping` parameter is configurable in each module's `config.yaml`.
-It lists the source axis for target `x,y,z`, with an optional `-` sign. For
-example, `"-y,x,z"` means `robot_x=-imu_y`, `robot_y=imu_x`, and
-`robot_z=imu_z`. Each source axis must be used once and the mapping must be a
-right-handed rotation.
-```
-
-The udev rules must create the same aliases. Back up and move any old `bxi-dev.rules` out of `/etc/udev/rules.d/` before installing:
+Install the rules, link helpers and boot scan together from the repository root:
 
 ```bash
-sudo install -m 0644 script/udev/70-bxi-imu.rules /etc/udev/rules.d/
-sudo udevadm control --reload-rules
-sudo udevadm trigger --subsystem-match=tty --action=add
-ls -l /dev/ttyIMU*
+bash script/deploy_device_links.sh
+ls -l /dev/ttyIMU
 ```
+
+This backs up and moves the old `bxi-dev.rules` out of the rules directory.
+The IMU rule matches `10c4:ea60` (ttyUSB) or `5953:5543` (ttyACM), without
+architecture or USB-port restrictions. `bxi-imu-link` keeps one valid target,
+selects another matching device on removal, and removes the alias if none remain.
+The enabled oneshot service restores the mapping on boot; udev handles hotplug.
+See [device-link details](../../script/README.md).
+Remapping does not reopen an already running reader; restart the IMU process
+through the normal stop/start procedure after reconnecting the device.
 
 ## Build and run
 
@@ -90,7 +96,7 @@ To force a backend:
 
 ```bash
 ros2 launch bxi_imu imu.launch.py driver:=hipnuc port:=/dev/ttyIMU baudrate:=921600
-ros2 launch bxi_imu imu.launch.py driver:=yesense port:=/dev/ttyIMU_YESENSE_1 baudrate:=921600
+ros2 launch bxi_imu imu.launch.py driver:=yesense port:=/dev/ttyIMU baudrate:=921600
 ```
 
 ### Controlling IMU CSV recording

@@ -416,6 +416,7 @@ class RobotStateMachine:
             )
             self._logger.info(
                 "state transition queued for resource preparation: "
+                f"[ {self.current.name} ──────▶ {to_state.name} ] | "
                 f"from={self.current.name}, to={to_state.name}, trigger={trigger}"
             )
             return True
@@ -437,9 +438,11 @@ class RobotStateMachine:
                 self._report_node_start_failure(to_state.name, exc)
                 return False
         self._logger.info(
-            "state transition: "
+            "========== state transition: ==========\n"
+            f"[ {self.current.name} ──────▶ {to_state.name} ]\n"
             f"from={self.current.name}, to={to_state.name}, "
-            f"plan={transition.name}, trigger={trigger}"
+            f"plan={transition.name}, trigger={trigger}\n"
+            "======================================"
         )
         try:
             to_state.on_prepare(self._ctx, self.current)
@@ -492,6 +495,7 @@ class RobotStateMachine:
         if self.current.name != preparing.from_state:
             self._logger.info(
                 "discarded prepared state transition because source changed: "
+                f"[ {preparing.from_state} ──────▶ {to_state.name} ] | "
                 f"from={preparing.from_state}, current={self.current.name}, "
                 f"to={to_state.name}"
             )
@@ -590,6 +594,11 @@ class RobotStateMachine:
         self._active = None
         self._fired_after_rules.clear()
         self.current.on_enter(self._ctx)
+        self._logger.info(
+            "state transition complete: "
+            f"[ {active.from_state.name} ──────▶ {self.current.name} ] | "
+            f"plan={active.transition.name}, trigger={active.trigger}"
+        )
 
     def _report_node_start_failure(self, state_name: str, exc: Exception) -> None:
         message = f"cannot enter state '{state_name}': Mod node startup failed: {exc}"
@@ -614,6 +623,7 @@ class RobotStateMachine:
     def _report_unavailable_state(self, state_name: str, trigger: str) -> None:
         message = (
             "state transition rejected because target is unavailable: "
+            f"[ {self.current.name} ──────▶ {state_name} ] | "
             f"from={self.current.name}, target={state_name}, trigger={trigger}"
         )
         self._logger.warning(message)

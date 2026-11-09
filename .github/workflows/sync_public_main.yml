@@ -68,6 +68,8 @@ jobs:
       - name: Verify Public Workflow Layout
         run: |
           test -f "${PUBLIC_DIR}/.github/workflows/auto_release.yml"
+          test -x "${PUBLIC_DIR}/script/usr_pro.sh"
+          test -x "${PUBLIC_DIR}/script/test_pro.sh"
           test ! -f "${PUBLIC_DIR}/.github/workflows/sync_public_main.yml"
           test ! -d "${PUBLIC_DIR}/src/bxi_example_py_elf3/mods/com.bxi.back_flip"
           test ! -d "${PUBLIC_DIR}/src/bxi_example_py_elf3/mods/com.bxi.ballet"
