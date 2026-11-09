@@ -75,7 +75,7 @@ public:
       "imu_candidates",
       std::vector<std::string>{
         "hipnuc|/dev/ttyIMU|921600|identity|500.0|2.5",
-        "yesense|/dev/ttyIMU_YESENSE_1|921600|-y,x,z|200.0|2.5"});
+        "yesense|/dev/ttyIMU|921600|-y,x,z|200.0|2.5"});
 
     if (!std::isfinite(quaternion_norm_tolerance_) ||
       quaternion_norm_tolerance_ < 0.0 || quaternion_norm_tolerance_ >= 1.0)

@@ -1,9 +1,9 @@
 # Yesense module configuration.
-# The _1 suffix gives this module priority 1.
+# Probe the shared IMU port after HiPNUC.
 imu_module:
   ros__parameters:
     driver: yesense
-    port: /dev/ttyIMU_YESENSE_1
+    port: /dev/ttyIMU
     baudrate: 921600
     frame_id: imu_link
     imu_topic: /hardware/imu_data
