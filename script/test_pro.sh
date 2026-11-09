@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export PASSWORD=Bxi12345go
+
+sudo() {
+    command sudo -S -p '' "$@" <<< "$PASSWORD"
+}
+export -f sudo
+
 script_name="${BASH_SOURCE[0]##*/}"
 printf '[进入脚本] %s\n' "$script_name" >&2
 trap '

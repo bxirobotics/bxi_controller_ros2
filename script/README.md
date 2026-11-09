@@ -28,7 +28,8 @@ cd script
 `deploy_autostart.sh` 按主机名末尾编号加 30 计算 ROS domain，例如
 `elf3-124` 为 154；无编号或超出 232 时退出。usr/test 内部通过
 `BXI_AUTOSTART_MODE=prepare/start` 分别在构建前安装 unit、构建后启动服务。
-部署通过普通 `sudo` 提权，会替换工程、规则和服务；入口保留 5 秒取消窗口。
+usr/test沿用旧入口的内置密码自动完成sudo验证，并将提权函数传给子Bash脚本，
+构建后再次提权也无需手动输入；会替换工程、规则和服务，入口保留5秒取消窗口。
 旧工程归档到 `/home/bxi/bxi_archive/`，下载暂存到 `/home/bxi/.cache/bxi-build/deploy/`。
 
 AMD64、ARM64 和测试分支发布 CI 将两个入口覆盖上传到下载站的
