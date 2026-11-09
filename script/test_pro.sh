@@ -62,7 +62,7 @@ if ! download_source; then
     sudo rm -rf -- "$project" "$candidate"
     download_source
 fi
-for name in build.sh script/ros_elf_launch.service script/udev/70-bxi-{bat,imu,remote}.rules script/bxi-battle-dragon-link; do
+for name in build.sh script/ros_elf_launch.service script/udev/70-bxi-{bat,imu,remote}.rules script/bxi-battle-dragon-link script/bxi-imu-link script/bxi-imu-link.service; do
     [[ -f "$candidate/$name" ]] || { echo "repository lacks $name" >&2; exit 1; }
 done
 
