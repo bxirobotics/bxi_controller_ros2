@@ -132,7 +132,15 @@ public:
     require(ioctl(fd_, TCSETS2, &settings) == 0, "TCSETS2 failed");
     clear();
   }
-  void clear() {require(ioctl(fd_, TCFLSH, 0) == 0, "IMU input flush failed");}
+  void clear()
+  {
+    require(ioctl(fd_, TCFLSH, 0) == 0, "IMU input flush failed");
+    hip_buffer.clear();
+  }
+
+  // Keep partial telemetry packets across commands so their tails cannot prefix an ASCII ACK.
+  Bytes hip_buffer;
+
   Bytes read_chunk()
   {
     pollfd p{fd_, POLLIN, 0};
@@ -185,11 +193,10 @@ Bytes yes_request(
 std::string hip_request(
   Serial & serial, const std::string & command, bool allow_silent = false, int timeout_ms = 500)
 {
-  serial.clear();
   const std::string wire = command + "\r\n";
   serial.write_all(Bytes(wire.begin(), wire.end()));
   std::string line, lines;
-  Bytes buffer;
+  auto & buffer = serial.hip_buffer;
   const auto deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
   while (Clock::now() < deadline) {
     const auto chunk = serial.read_chunk();
@@ -321,6 +328,7 @@ std::string prepare_imu_device(
         try {
           serial.write_all({'\r', '\n'});
           pause_ms(20);
+          serial.clear();
           model = field(hip_request(serial, "LOG VERSION", false, timeout_ms), "PNAME");
           if (!model.empty()) {detected = "hipnuc";}
         } catch (const std::exception &) {
