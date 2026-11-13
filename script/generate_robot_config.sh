@@ -19,8 +19,8 @@ short_hostname="${host_name%%.*}"
 [[ "$short_hostname" =~ ([0-9]+)$ ]] || { echo "hostname lacks numeric suffix: $host_name" >&2; exit 1; }
 device_id="${BASH_REMATCH[1]}"
 ((${#device_id} <= 3)) || { echo "device id out of range: $device_id" >&2; exit 1; }
-domain=$((10#$device_id + 30))
-((domain <= 232)) || { echo "ROS_DOMAIN_ID out of range: $domain" >&2; exit 1; }
+# shortcut: Domain ID 每232个编号复用，跨机通信需另行隔离或分配。
+domain=$(((10#$device_id + 29) % 232 + 1))
 generated_at="$(date --iso-8601=seconds)"
 output="${BXI_ROBOT_CONFIG_FILE:-/opt/bxi/robot_config.yaml}"
 output_dir="$(dirname -- "$output")"

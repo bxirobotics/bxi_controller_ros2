@@ -25,8 +25,12 @@ cd script
 ./deploy_autostart.sh
 ```
 
-`deploy_autostart.sh` 按主机名末尾编号加 30 计算 ROS domain，例如
-`elf3-124` 为 154；无编号或超出 232 时退出。usr/test 内部通过
+所有入口、机器人 YAML 和自启动服务统一按 `(设备编号 + 29) % 232 + 1` 计算 ROS domain，
+在 `1～232` 循环，例如 `124→154`、`202→232`、`203→1`、`233→31`、`255→53`。
+显式生成 service 时同样拒绝 domain 0。
+原来可用的编号映射不变，仍只接受最多三位数字的设备编号，无编号或超长时退出。
+每隔 232 个编号会复用 domain；默认 CycloneDDS 仅使用 `lo`，跨机通信时需另行隔离或分配。
+usr/test 内部通过
 `BXI_AUTOSTART_MODE=prepare/start` 分别在构建前安装 unit、构建后启动服务。
 usr/test沿用旧入口的内置密码自动完成sudo验证，并将提权函数传给子Bash脚本，
 构建后再次提权也无需手动输入；会替换工程、规则和服务，入口保留5秒取消窗口。

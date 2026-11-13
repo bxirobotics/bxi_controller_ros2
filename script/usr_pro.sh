@@ -49,8 +49,8 @@ short_hostname="${short_hostname%%.*}"
 [[ "$short_hostname" =~ ([0-9]+)$ ]] || { echo "hostname lacks numeric suffix: $short_hostname" >&2; exit 1; }
 device_id="${BASH_REMATCH[1]}"
 ((${#device_id} <= 3)) || { echo "device id out of range: $device_id" >&2; exit 1; }
-domain=$((10#$device_id + 30))
-((domain <= 232)) || { echo "ROS_DOMAIN_ID out of range: $domain" >&2; exit 1; }
+# shortcut: Domain ID 每232个编号复用，跨机通信需另行隔离或分配。
+domain=$(((10#$device_id + 29) % 232 + 1))
 
 sudo -v
 mkdir -p "$workspace" /home/bxi/.cache/bxi-build/deploy /home/bxi/bxi_archive
