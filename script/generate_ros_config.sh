@@ -17,7 +17,7 @@ domain="${2:?usage: generate_ros_config.sh SERVICE_TEMPLATE ROS_DOMAIN_ID}"
     exit 1
 }
 domain=$((10#$domain))
-((domain <= 232)) || {
+((domain >= 1 && domain <= 232)) || {
     echo "invalid ROS_DOMAIN_ID: $domain" >&2
     exit 1
 }
