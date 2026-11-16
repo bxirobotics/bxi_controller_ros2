@@ -291,14 +291,6 @@ actions:
     action: toggle_navigation_control
     manifest:
       label: 切换手动 / 话题/cmd_vel控制
-  - from: dance
-    event: toggle_pause
-    action: toggle_pause
-    manifest:
-      label: 暂停/继续
-      ui: pause
-      confirm: true
-      confirm_message: 确保机器人姿势安全后再继续播放舞蹈动作
   - from: applause
     event: toggle_pause
     action: toggle_pause
