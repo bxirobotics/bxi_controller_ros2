@@ -487,8 +487,10 @@ private:
   {
     while (rclcpp::ok() && running_) {
       ImuSample sample;
-      if (!backend_->read(sample)) {
-        check_imu_timeout(false);
+      const bool sample_received = backend_->read(sample);
+      const auto received_at = std::chrono::steady_clock::now();
+      if (!sample_received) {
+        check_imu_timeout(false, received_at);
         if (!running_ || !rclcpp::ok()) {
           return;
         }
@@ -507,13 +509,11 @@ private:
       const bool quaternion_valid = valid_quaternion(sample.imu.orientation);
       const auto freshness = freshness_.observe(
         sample.device_tick, sample.device_tick_period_us, sample.device_tick_modulus,
-        sample.device_tick_kind, std::chrono::steady_clock::now(),
-        imu_freshness_lag_limit_ms_);
+        sample.device_tick_kind, received_at, imu_freshness_lag_limit_ms_);
       const auto frame_freshness = frame_freshness_.observe(
         sample.device_frame_id ?
         std::optional<std::uint64_t>(*sample.device_frame_id) : std::nullopt,
-        0, std::uint64_t{1} << 16, 4, std::chrono::steady_clock::now(),
-        imu_freshness_lag_limit_ms_);
+        0, std::uint64_t{1} << 16, 4, received_at, imu_freshness_lag_limit_ms_);
       const bool suspicious = freshness.status == FreshnessStatus::repeated ||
         freshness.status == FreshnessStatus::reversed ||
         freshness.status == FreshnessStatus::lagging ||
@@ -522,7 +522,7 @@ private:
       if (suspicious) {
         ++suspicious_frame_count_;
         RCLCPP_WARN_THROTTLE(
-          get_logger(), *get_clock(), 5000,
+          get_logger(), diagnostic_clock_, 5000,
           "IMU device freshness: tick_status=%s frame_status=%s tick=%llu kind=%u "
           "relative_lag=%.1f ms "
           "(not absolute sample age), count=%llu mode=%s",
@@ -538,19 +538,19 @@ private:
         freshness.status == FreshnessStatus::reversed ||
         freshness.status == FreshnessStatus::lagging);
       record_sample(
-        sample, freshness, frame_freshness, quaternion_valid,
+        sample, received_at, freshness, frame_freshness, quaternion_valid,
         !quaternion_valid ? "invalid_quaternion" :
         (freshness_rejected ? "device_freshness" : ""));
       if (freshness_rejected) {
-        check_imu_timeout(false);
+        check_imu_timeout(false, received_at);
         continue;
       }
-      check_imu_timeout(true);
+      check_imu_timeout(true, received_at);
       if (!quaternion_valid) {
         ++invalid_quaternion_count_;
         const std::string dropped_count = std::to_string(invalid_quaternion_count_);
         RCLCPP_WARN_THROTTLE(
-          get_logger(), *get_clock(), 5000,
+          get_logger(), diagnostic_clock_, 5000,
           "dropping IMU frame with invalid quaternion: "
           "w=%.6f x=%.6f y=%.6f z=%.6f norm=%.6f "
           "(accepted range %.3f..%.3f), dropped=%s",
@@ -707,21 +707,21 @@ private:
   }
 
   void record_sample(
-    const ImuSample & sample, FreshnessResult freshness, FreshnessResult frame_freshness,
-    bool quaternion_valid, const char * drop_reason)
+    const ImuSample & sample, std::chrono::steady_clock::time_point received_at,
+    FreshnessResult freshness, FreshnessResult frame_freshness, bool quaternion_valid,
+    const char * drop_reason)
   {
     if (!imu_record_enabled_ || !recording_running_) {
       return;
     }
-    const auto now = std::chrono::steady_clock::now();
     const auto receive_time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::system_clock::now().time_since_epoch()).count();
     double arrival_gap_ms = 0.0;
     if (last_record_time_.has_value()) {
       arrival_gap_ms = std::chrono::duration<double, std::milli>(
-        now - *last_record_time_).count();
+        received_at - *last_record_time_).count();
     }
-    last_record_time_ = now;
+    last_record_time_ = received_at;
 
     bool queued = false;
     {
@@ -1057,13 +1057,13 @@ private:
     return expected_period_ms() * imu_timeout_multiplier_;
   }
 
-  void check_imu_timeout(bool sample_received)
+  void check_imu_timeout(
+    bool sample_received, std::chrono::steady_clock::time_point now)
   {
     if (imu_frequency_hz_ <= 0.0 || imu_timeout_multiplier_ < 1.0) {
       return;
     }
 
-    const auto now = std::chrono::steady_clock::now();
     if (sample_received) {
       if (last_sample_time_.has_value()) {
         const double gap_ms = std::chrono::duration<double, std::milli>(
@@ -1134,6 +1134,7 @@ private:
   double imu_timeout_multiplier_{1.5};
   std::string imu_freshness_mode_{"observe"};
   double imu_freshness_lag_limit_ms_{100.0};
+  rclcpp::Clock diagnostic_clock_{RCL_STEADY_TIME};
   SampleFreshness freshness_;
   SampleFreshness frame_freshness_;
   std::uint64_t suspicious_frame_count_{0};
