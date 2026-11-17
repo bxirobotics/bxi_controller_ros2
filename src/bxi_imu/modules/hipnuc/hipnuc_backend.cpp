@@ -71,6 +71,7 @@ void HipnucBackend::close()
 {
   opened_ = false;
   if (fd_ >= 0) {
+    ioctl(fd_, TIOCNXCL);
     ::close(fd_);
     fd_ = -1;
   }

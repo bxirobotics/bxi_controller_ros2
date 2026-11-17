@@ -36,6 +36,7 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include "bxi_imu/imu_backend.hpp"
+#include "bxi_imu/probe.hpp"
 
 namespace bxi_imu
 {
@@ -108,7 +109,16 @@ public:
         }
       }
       backend_ = create_backend(driver_, port_, baudrate_, get_logger());
-      if (backend_ && !backend_->open()) {
+      const double tolerance = std::isfinite(quaternion_norm_tolerance_) &&
+        quaternion_norm_tolerance_ >= 0.0 && quaternion_norm_tolerance_ < 1.0 ?
+        quaternion_norm_tolerance_ : 0.1;
+      if (backend_ && (!backend_->open() ||
+        !probe_backend(*backend_, std::chrono::milliseconds(1200), 3, tolerance).matched))
+      {
+        RCLCPP_ERROR(get_logger(),
+          "IMU startup validation failed: driver=%s port=%s; "
+          "require 3 valid protocol samples within 1200ms",
+          driver_.c_str(), port_.c_str());
         backend_.reset();
       }
     }
@@ -370,17 +380,41 @@ private:
         continue;
       }
 
+      if ((driver_ != "auto" && driver_ != candidate_config.driver) ||
+        (port_ != "auto" && port_ != candidate_config.port))
+      {
+        continue;
+      }
+
       try {
         auto candidate = create_backend(
           candidate_config.driver, candidate_config.port, candidate_config.baudrate, get_logger());
         if (candidate && candidate->open()) {
+          const double configured_tolerance = candidate_config.has_module_parameters ?
+            candidate_config.quaternion_norm_tolerance : quaternion_norm_tolerance_;
+          const double tolerance = std::isfinite(configured_tolerance) &&
+            configured_tolerance >= 0.0 && configured_tolerance < 1.0 ?
+            configured_tolerance : 0.1;
+          const auto result = probe_backend(
+            *candidate, std::chrono::milliseconds(1200), 3, tolerance);
+          if (!result.matched) {
+            RCLCPP_WARN(get_logger(),
+              "IMU probe failed: driver=%s port=%s reason=%s valid_frames=%d invalid_frames=%d",
+              candidate_config.driver.c_str(), candidate_config.port.c_str(),
+              result.device_lost ? "device_lost" :
+              result.valid_frames == 0 ? "no_valid_protocol_frames_or_no_data" :
+              "insufficient_consecutive_valid_frames",
+              result.valid_frames, result.invalid_frames);
+            candidate->close();
+            continue;
+          }
           driver_ = candidate_config.driver;
           port_ = candidate_config.port;
           baudrate_ = candidate_config.baudrate;
           apply_candidate_config(candidate_config);
           backend_ = std::move(candidate);
           RCLCPP_INFO(
-            get_logger(), "selected IMU candidate driver=%s port=%s baudrate=%d",
+            get_logger(), "selected IMU candidate driver=%s port=%s baudrate=%d after protocol validation",
             driver_.c_str(), port_.c_str(), baudrate_);
           return;
         }

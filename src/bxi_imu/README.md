@@ -51,21 +51,29 @@ The numeric suffix in a logical serial alias defines priority:
 /dev/ttyIMU_YESENSE_2          priority 2
 ```
 
-Lower numbers are tried first. The node opens candidates exclusively. If a
-device is absent, busy, or cannot be opened, the next candidate is tried.
+Lower numbers are tried first. After opening a candidate exclusively, the node
+requires three consecutive decoded samples within 1200 ms, with a valid quaternion
+norm and finite motion data. Failed probes release the port and try the next
+candidate; if all fail, startup exits with an error without publishing IMU data.
+The same port can therefore reject HiPNUC and then accept Yesense frames.
+Explicit driver/port selections are respected and also require protocol validation.
+This is a read-only data probe; it does not query identity or configure the sensor,
+unlike the additional device setup flow on `dev`. Baud rate and axis mapping must
+still match the device. An `opened` log alone does not mean the protocol matched;
+look for `selected ... after protocol validation`.
 
 Current module settings:
 
 ```text
 hipnuc  -> /dev/ttyIMU             -> 921600 baud
-yesense -> /dev/ttyIMU_YESENSE_1   -> 921600 baud
+yesense -> /dev/ttyIMU             -> 921600 baud
+```
 
 The `axis_mapping` parameter is configurable in each module's `config.yaml`.
 It lists the source axis for target `x,y,z`, with an optional `-` sign. For
 example, `"-y,x,z"` means `robot_x=-imu_y`, `robot_y=imu_x`, and
 `robot_z=imu_z`. Each source axis must be used once and the mapping must be a
 right-handed rotation.
-```
 
 The udev rules must create the same aliases:
 
