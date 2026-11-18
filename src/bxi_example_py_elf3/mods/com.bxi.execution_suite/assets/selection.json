@@ -1,0 +1,42 @@
+[
+  {
+    "id": "06",
+    "name": "ndance-1",
+    "frames": 1034,
+    "fps": 50,
+    "frame_index": [
+      14642,
+      15675
+    ],
+    "source_schema": "sonic_passive_real_reference_v1",
+    "recovered_history_frames": 141,
+    "observed_source_rate_hz": 47.50308162843866,
+    "source_arrays_sha256": {
+      "term1_local": "2064518fed3760ca9be144dcf0b7a5ab0270167811bee51f215580db35686b47",
+      "root_quat": "6b70cf4e51a48e6df27a54080f5d48aa2e91f6a52940f46be71b09921baa9a5f",
+      "wrist": "3b96e0ee4c8395e9f20c285ebf05da95217643466a95ca8a055070c9ace8d612"
+    },
+    "conversion": "Unmodified float32 PICO reference arrays. Original frame order, wxyz quaternion, Lx/Ly/Lz/Rx/Ry/Rz wrists; nominal 50 Hz playback.",
+    "reference_sha256": "ba14bc74f1af5373a8ce07926bbf3e8e5d169f030b1fa9eff91bc2b2c21a2b6b"
+  },
+  {
+    "id": "11",
+    "name": "ndance-2",
+    "frames": 769,
+    "fps": 50,
+    "frame_index": [
+      17151,
+      17919
+    ],
+    "source_schema": "sonic_passive_real_reference_v1",
+    "recovered_history_frames": 114,
+    "observed_source_rate_hz": 48.12689306274063,
+    "source_arrays_sha256": {
+      "term1_local": "5f2eacab2914f00af0c6bb92c96c82fafeed9c76ff67482e26af977fe76f8982",
+      "root_quat": "d5255c1959092bc1ca1c59a29c7a47e73a15d5cf97d743dac0c9209af62629e2",
+      "wrist": "93ad0bd97336c34dcfe55a16bf310ff843114380c84b35298ff7694fe85b7b8c"
+    },
+    "conversion": "Unmodified float32 PICO reference arrays. Original frame order, wxyz quaternion, Lx/Ly/Lz/Rx/Ry/Rz wrists; nominal 50 Hz playback.",
+    "reference_sha256": "9384ab135fe3c7b3ccf6a759d7b7a6d94e2e0b67551530a6b1ff905248a5536b"
+  }
+]

@@ -1,0 +1,69 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ELF3 模型—执行评测</title>
+<style>body{font:15px system-ui;margin:32px auto;max-width:1250px;padding:0 20px;background:#f4f7fa;color:#142334}h1{font-size:27px}select,input{padding:8px;margin:4px;border:1px solid #b4c3d0;border-radius:4px}article{background:white;padding:20px;margin:18px 0;border-radius:10px}canvas{width:100%;height:360px}table{border-collapse:collapse;width:100%;font-size:13px}td,th{text-align:right;padding:8px;border-bottom:1px solid #dde5eb}td:first-child,th:first-child{text-align:left}.legend{display:flex;gap:25px}.model{color:#9c3fa7}.command{color:#b36b06}.actual{color:#067ca2}.reference{color:#23804a}.legend{flex-wrap:wrap}pre{white-space:pre-wrap;max-height:300px;overflow:auto}.muted{color:#53677b}.scroll{overflow:auto}</style>
+<h1>ELF3 · 模型输出—执行跟踪评测</h1><p>身体29关节 · 编码器角度反馈 · 原始时间轴 · 可配置工程初筛</p>
+<article id="summary"></article>
+<article><h2>执行完成与精度初筛</h2><p id="acceptance-summary"></p><details><summary>逐关节判定、阈值和中止记录</summary><pre id="acceptance-details"></pre></details></article>
+<article><h2>故障与温度</h2><p id="diagnostic-summary"></p><details><summary>故障事件和各关节温度</summary><pre id="diagnostic-details"></pre></details></article><article>
+<label>模型/运行段 <select id="segment"></select></label><label>关节 <select id="joint"></select></label><br>
+<label>起点（单调秒）<input id="start" type="number" step="0.01"></label><label>终点 <input id="end" type="number" step="0.01"></label>
+<div class="legend">
+<label id="reference-legend" class="reference" hidden><input type="checkbox" id="q_ref" checked>参考角 q_ref</label>
+<label class="model"><input type="checkbox" id="q_model" checked>模型目标 q_model（虚线）</label>
+<label class="command"><input type="checkbox" id="q_command" checked>下发指令 q_command</label>
+<label class="actual"><input type="checkbox" id="q_actual" checked>实际反馈 q_actual</label>
+</div>
+<p id="overlap-note" hidden></p>
+<canvas id="plot"></canvas><p class="muted">角度：度。曲线均匀抽样，每段最多1600点，仅供浏览；缺口断线。统计使用全部有效样本。完整弧度数组和有效掩码在 aligned.npz。</p>
+<p id="reference-note" class="muted" hidden>q_ref 来自 g1_kin 当前帧重建，不是独立真值。模型目标与参考的差异不自动表示控制错误；保持、混合和不匹配模型不计入参考评分。</p><p id="context"></p></article>
+<article><label>误差 <select id="comparison"><option value="actual_minus_model">实际 − 模型（主结果）</option><option value="actual_minus_command">实际 − 指令</option><option value="command_minus_model">指令 − 模型</option></select></label>
+<p id="empty-comparison" hidden></p>
+<div class="scroll"><table><thead><tr><th>关节/部位</th><th>样本值数</th><th>MAE°</th><th>RMSE°</th><th>P95°</th><th>最大°</th><th>偏差°</th><th>样本覆盖</th><th>时间覆盖s</th><th>滞后ms</th></tr></thead><tbody id="metrics"></tbody></table></div>
+<p class="muted">部位样本值数为多个关节的有效角度值总数；反馈帧数和独立模型输出次数分别报告。滞后为轨迹估计，补偿指标仅在JSON中单列，不改主误差。</p></article>
+<article><details><summary>完整性、过滤原因与记录来源</summary><pre id="integrity"></pre></details></article>
+<script id="data" type="application/json">__DATA__</script><script>
+const D=JSON.parse(document.getElementById('data').textContent),R=D.report,$=id=>document.getElementById(id);
+const fmt=x=>x==null?'—':Number(x).toFixed(3);
+function text(el,s){el.textContent=s}
+const statuses={screening_pass:'通过工程初筛',screening_fail:'超出工程初筛门槛',insufficient_data:'数据不足',not_assessed:'未评定',not_observed:'未观测',incomplete:'未完整执行',failed:'执行故障',playback_complete:'动作完整播完'};
+text($('acceptance-summary'),R.acceptance?`精度：${statuses[R.acceptance.status]||R.acceptance.status}；执行：${statuses[R.acceptance.execution.status]||R.acceptance.execution.status}。工程初筛不是行业认证，不触发控制动作。`:'未选择精度判定配置；本报告仍提供原始误差指标。');
+text($('acceptance-details'),JSON.stringify(R.acceptance||{status:R.accuracy_acceptance},null,2));
+text($('diagnostic-summary'),`事件：${JSON.stringify(R.diagnostics?.by_severity||{})}；温度：${R.temperatures?.status||'unobserved'}。`);
+text($('diagnostic-details'),JSON.stringify({diagnostics:R.diagnostics,temperatures:R.temperatures},null,2));
+text($('summary'),`模型结果：${R.summary.model_result}。反馈 ${R.summary.feedback_frames} 帧；29关节全部有效：模型 ${R.summary.model_valid_body29_frames} 帧，指令 ${R.summary.command_valid_body29_frames} 帧。现场验收状态不由本报告推定。`);
+if(R.sonic_reference){$('reference-legend').hidden=false;$('reference-note').hidden=false;[['actual_minus_reference','实际 − SONIC重建参考'],['model_minus_reference','模型 − SONIC重建参考'],['command_minus_reference','指令 − SONIC重建参考']].forEach(([v,n])=>$('comparison').add(new Option(n,v)));$('comparison').value='actual_minus_reference';$('summary').append(document.createTextNode(` SONIC参考：${R.summary.reference_result}；29关节全部有效 ${R.summary.reference_valid_body29_frames} 帧；参考输入按推理计数 ${R.sonic_reference.inference_events} 次。`));}
+text($('integrity'),JSON.stringify({sonic_reference:R.sonic_reference,integrity:R.data_integrity,reasons:R.summary.reasons,source:R.source,options:R.options},null,2));
+let mostSamples=0;
+D.charts.forEach((c,i)=>{
+ const phase={active:'动作执行',blend:'切换混合'}[c.phase]||c.phase;
+ $('segment').add(new Option(`${c.model||'模型未观测'} / ${phase} / 段${c.id}`,i));
+ const samples=R.segments[c.id].comparisons[$('comparison').value]?.body29?.n||0;
+ if(samples>mostSamples){mostSamples=samples;$('segment').value=String(i)}
+});
+D.joints.forEach((n,i)=>$('joint').add(new Option(n,i)));
+function selected(){return D.charts[Number($('segment').value)]}
+function reset(){const c=selected();if(!c)return;$('start').value=c.t[0];$('end').value=c.t.at(-1);draw();}
+const seriesColors={q_ref:'#23804a',q_command:'#b36b06',q_actual:'#067ca2',q_model:'#9c3fa7'};
+function draw(){const c=selected();if(!c)return;const s=R.segments[c.id],j=Number($('joint').value),lo=Number($('start').value),hi=Number($('end').value);const canvas=$('plot'),w=canvas.clientWidth,h=360,dpr=devicePixelRatio||1;canvas.width=w*dpr;canvas.height=h*dpr;const ctx=canvas.getContext('2d');ctx.scale(dpr,dpr);ctx.clearRect(0,0,w,h);
+ const indices=c.t.map((t,i)=>i).filter(i=>c.t[i]>=lo&&c.t[i]<=hi);
+ const keys=Object.keys(seriesColors).filter(key=>c[key] && $(key).checked);
+ let values=[];keys.forEach(k=>indices.forEach(i=>{if(c[k][i][j]!=null)values.push(c[k][i][j])}));let ymin=values.length?Math.min(...values):0,ymax=values.length?Math.max(...values):1;if(ymax-ymin<.01){ymin-=1;ymax+=1}const pad=(ymax-ymin)*.1;ymin-=pad;ymax+=pad;
+ const X=t=>60+(t-lo)/Math.max(hi-lo,.001)*(w-80),Y=q=>h-40-(q-ymin)/(ymax-ymin)*(h-65);ctx.font='12px system-ui';ctx.fillStyle='#53677b';for(let k=0;k<=4;k++){const v=ymin+(ymax-ymin)*k/4;ctx.fillText(v.toFixed(1)+'°',3,Y(v));ctx.strokeStyle='#e2e9ef';ctx.beginPath();ctx.moveTo(55,Y(v));ctx.lineTo(w-15,Y(v));ctx.stroke()}ctx.fillText(lo.toFixed(3)+'s',60,h-10);ctx.fillText(hi.toFixed(3)+'s',w-100,h-10);
+ keys.forEach(key=>{
+   ctx.strokeStyle=seriesColors[key];ctx.lineWidth=1.5;
+   ctx.setLineDash(key==='q_model'?[6,4]:[]);
+   ctx.beginPath();let last=null;indices.forEach(i=>{const q=c[key][i][j];if(q==null){last=null;return}if(last==null||c.t[i]-c.t[last]>Math.max(s.thresholds.feedback_gap_s,(hi-lo)/800)){ctx.moveTo(X(c.t[i]),Y(q))}else ctx.lineTo(X(c.t[i]),Y(q));last=i});ctx.stroke();
+ });
+ const commandModel=s.comparisons.command_minus_model?.[D.joints[j]],note=$('overlap-note');
+ note.hidden=!(commandModel?.n>0 && commandModel.max_abs_deg===0);
+ if(!note.hidden)text(note,`本段该关节的 ${commandModel.n} 个有效配对样本中，模型目标与下发指令完全相同。`);
+ text($('context'),`段${s.id}：${s.inference_events}条模型事件（有效独立推理 ${s.independent_inference_events??'未记录'} 次）、${s.feedback_events}帧反馈；状态 ${s.phase}；分段原因 ${s.boundary}。指令年龄上限 ${fmt(s.thresholds.command_age_s*1000)}ms，模型年龄上限 ${fmt(s.thresholds.model_age_s*1000)}ms。`);
+ if(s.sonic_reference)$('context').append(document.createTextNode(` 参考有效 ${s.sonic_reference.valid_body29_frames} 帧；推理参考状态 ${JSON.stringify(s.sonic_reference.inference_status_counts)}；反馈关联状态 ${JSON.stringify(s.sonic_reference.association_status_counts)}。`));
+ const comparison=$('comparison').value,rows=s.comparisons[comparison]||{},notice=$('empty-comparison');
+ notice.hidden=Boolean(rows.body29?.n);
+ if(!notice.hidden)text(notice,s.phase==='blend' && comparison==='actual_minus_model'
+   ? '切换混合段不计入模型跟踪评分。可在“模型/运行段”选择动作执行段。'
+   : '本段没有可用于当前比较的配对样本，无法计算误差。');
+ $('metrics').replaceChildren();Object.entries(rows).forEach(([name,m])=>{const tr=document.createElement('tr');[name,m.n,fmt(m.mae_deg),fmt(m.rmse_deg),fmt(m.p95_abs_deg),fmt(m.max_abs_deg),fmt(m.bias_deg),fmt(m.sample_coverage*100)+'%',fmt(m.all_joints_time_coverage_s),m.lag.estimated_lag_ms==null?m.lag.status:fmt(m.lag.estimated_lag_ms)].forEach(v=>{const td=document.createElement('td');text(td,String(v));tr.append(td)});$('metrics').append(tr)})}
+ $('segment').onchange=reset;['joint','start','end','comparison',...Object.keys(seriesColors)].forEach(k=>$(k).onchange=draw);window.onresize=draw;reset();
+</script></html>

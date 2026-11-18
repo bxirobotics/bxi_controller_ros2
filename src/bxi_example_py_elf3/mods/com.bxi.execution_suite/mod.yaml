@@ -1,0 +1,44 @@
+schema: 1
+id: com.bxi.execution_suite
+name: 模型执行测试
+version: 2.0.0
+api: ">=4,<5"
+enable: true
+entrypoint: plugin:create_mod
+visibility: public
+conflicts: []
+python_exports: []
+runtime_requirements:
+  python: []
+  ros: []
+  system: []
+requires: [com.bxi.basic_actions, com.bxi.suspended_tests]
+events:
+  # Reuse the colleague's reserved outputs in xbox_default.yaml unchanged.
+  dance: {slot: btn_10, value: 31}    # LT+RT+A
+  sonic06: {slot: btn_10, value: 33}  # LT+RT+X
+  sonic11: {slot: btn_10, value: 34}  # LT+RT+Y
+states:
+  dance: {manifest: {label: CXK跟踪测试, group: Tests}}
+  sonic06: {manifest: {label: SONIC06跟踪测试, group: Tests}}
+  sonic11: {manifest: {label: SONIC11跟踪测试, group: Tests}}
+routes:
+  - {from: com.bxi.basic_actions/normal, event: dance, to: dance, transition: {type: running_blend, duration: 0.3, curve: smootherstep, sample_from: true, sample_to: true, advance_from: true, advance_to: false}}
+  - {from: com.bxi.basic_actions/normal, event: sonic06, to: sonic06, transition: {type: running_blend, duration: 0.3, curve: smootherstep, sample_from: true, sample_to: true, advance_from: true, advance_to: false}}
+  - {from: com.bxi.basic_actions/normal, event: sonic11, to: sonic11, transition: {type: running_blend, duration: 0.3, curve: smootherstep, sample_from: true, sample_to: true, advance_from: true, advance_to: false}}
+  - {from: com.bxi.basic_actions/forward_back, event: dance, to: dance, transition: {type: running_blend, duration: 0.3, curve: smootherstep, sample_from: true, sample_to: true, advance_from: true, advance_to: false}}
+  - {from: com.bxi.basic_actions/forward_back, event: sonic06, to: sonic06, transition: {type: running_blend, duration: 0.3, curve: smootherstep, sample_from: true, sample_to: true, advance_from: true, advance_to: false}}
+  - {from: com.bxi.basic_actions/forward_back, event: sonic11, to: sonic11, transition: {type: running_blend, duration: 0.3, curve: smootherstep, sample_from: true, sample_to: true, advance_from: true, advance_to: false}}
+  # A normal self-route cancels pending resource loads and entry blends too.
+  - {from: com.bxi.basic_actions/normal, event: com.bxi.basic_actions/normal, to: com.bxi.basic_actions/normal}
+  - {from: com.bxi.basic_actions/forward_back, event: com.bxi.basic_actions/normal, to: com.bxi.basic_actions/normal}
+  - {from: dance, event: com.bxi.basic_actions/zero_torque, to: com.bxi.basic_actions/zero_torque}
+  - {from: sonic06, event: com.bxi.basic_actions/zero_torque, to: com.bxi.basic_actions/zero_torque}
+  - {from: sonic11, event: com.bxi.basic_actions/zero_torque, to: com.bxi.basic_actions/zero_torque}
+  - {from: dance, event: com.bxi.suspended_tests/exit_test_mode, to: com.bxi.basic_actions/zero_torque}
+  - {from: sonic06, event: com.bxi.suspended_tests/exit_test_mode, to: com.bxi.basic_actions/zero_torque}
+  - {from: sonic11, event: com.bxi.suspended_tests/exit_test_mode, to: com.bxi.basic_actions/zero_torque}
+actions:
+  - {from: dance, event: com.bxi.basic_actions/normal, action: cancel, manifest: {label: 中止CXK并返回normal}}
+  - {from: sonic06, event: com.bxi.basic_actions/normal, action: cancel, manifest: {label: 中止SONIC06并返回normal}}
+  - {from: sonic11, event: com.bxi.basic_actions/normal, action: cancel, manifest: {label: 中止SONIC11并返回normal}}
