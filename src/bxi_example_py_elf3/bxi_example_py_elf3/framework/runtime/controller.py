@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 import math
 from pathlib import Path
+from threading import RLock
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -52,6 +53,8 @@ class RobotControlFramework:
         control_period: float = 0.02,
         cpu_affinity_plan: CpuAffinityPlan | None = None,
     ) -> None:
+        # Mod remote guards share state between button filtering and observers.
+        self._remote_event_lock = RLock()
         self._ros_node = ros_node
         self._loggers = loggers
         self._logger = loggers.framework("controller")
@@ -270,15 +273,17 @@ class RobotControlFramework:
         *,
         sync_only: bool = False,
     ) -> list[str]:
-        events = self.remote_event_adapter.extract_events(values, sync_only=sync_only)
-        for event_filter in self.mod_runtime.remote_event_filters:
-            events = event_filter(values, events, self.current_state_name)
-        return events
+        with self._remote_event_lock:
+            events = self.remote_event_adapter.extract_events(values, sync_only=sync_only)
+            for event_filter in self.mod_runtime.remote_event_filters:
+                events = event_filter(values, events, self.current_state_name)
+            return events
 
     def _notify_state_observers(self) -> None:
-        state_name = self.current_state_name
-        for observer in self.mod_runtime.state_observers:
-            observer(state_name)
+        with self._remote_event_lock:
+            state_name = self.current_state_name
+            for observer in self.mod_runtime.state_observers:
+                observer(state_name)
 
     def request_state(
         self,

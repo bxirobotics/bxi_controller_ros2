@@ -8,7 +8,7 @@ import math
 from pathlib import Path
 from queue import Empty, SimpleQueue
 import sys
-from threading import current_thread, Event, RLock, Thread
+from threading import current_thread, Event, Lock, RLock, Thread
 import time
 from typing import Callable
 
@@ -25,6 +25,7 @@ from bxi_example_py_elf3.framework.runtime.controller import RobotControlFramewo
 from bxi_example_py_elf3.framework.runtime.logging import LoggingConfig, ScopedLoggers
 from bxi_example_py_elf3.framework.runtime.mod_nodes import ExecutorLike
 from .api import ControlPlatformAdapter
+from .cpu_usage import SystemCpuUsage
 from .cpu_affinity import (
     CpuAffinityPlan,
     CpuAffinityRole,
@@ -209,11 +210,13 @@ class RobotControlRuntime:
         self._logger = self.loggers.framework("runtime")
         self._external_fatal_callback = fatal_callback
         self._framework_lock = RLock()
+        self._remote_event_lock = Lock()
         self._stop_event = Event()
         self._maintenance_thread: Thread | None = None
         self._deadline_miss_queue: SimpleQueue[dict[str, object]] = SimpleQueue()
         self._pending_deadline_summary: dict[str, object] | None = None
         self._last_deadline_warning_at = 0.0
+        self._cpu_usage = SystemCpuUsage()
         self._started = False
         self._closed = False
         self._original_python_switch_interval: float | None = None
@@ -312,6 +315,7 @@ class RobotControlRuntime:
             return
 
         self._stop_event.clear()
+        self._cpu_usage = SystemCpuUsage()  # Exclude stopped time on restart.
         original_interval = sys.getswitchinterval()
         self._original_python_switch_interval = original_interval
         sys.setswitchinterval(self.config.python_switch_interval_sec)
@@ -334,8 +338,14 @@ class RobotControlRuntime:
             self._restore_python_switch_interval()
             raise
 
-    def stop(self) -> None:
+    def request_stop(self) -> None:
+        """Cancel both control owners without blocking a ROS shutdown callback."""
         self._stop_event.set()
+        self.scheduler.request_stop()
+        self.test_scheduler.request_stop()
+
+    def stop(self) -> None:
+        self.request_stop()
         first_error: Exception | None = None
         try:
             self.scheduler.stop()
@@ -389,7 +399,9 @@ class RobotControlRuntime:
         *,
         sync_only: bool = False,
     ) -> list[str]:
-        with self._framework_lock:
+        # The edge adapter and Mod remote filters stay ordered, independently
+        # of model execution and sensor callbacks.
+        with self._remote_event_lock:
             return self.framework.extract_remote_events(values, sync_only=sync_only)
 
     def request_state(
@@ -429,12 +441,18 @@ class RobotControlRuntime:
         return info
 
     def _run_control_cycle(self, *, test_owner: bool) -> ControlCycleResult:
+        if self._stop_event.is_set():
+            return ControlCycleResult(state="stopping", active=False)
         with self._framework_lock:
+            if self._stop_event.is_set():
+                return ControlCycleResult(state="stopping", active=False)
             if self._test_owns_control() != test_owner:
                 return ControlCycleResult(state="inactive", active=False)
             if not self._platform.startup_step(time.monotonic()):
                 return ControlCycleResult(state="startup", active=False)
             observation, events = self._platform.snapshot_control_inputs()
+            if self._stop_event.is_set():
+                return ControlCycleResult(state="stopping", active=False)
             events = tuple(events)
             self._last_control_events = events
             scheduler = self.test_scheduler if test_owner else self.scheduler
@@ -444,7 +462,8 @@ class RobotControlRuntime:
                 scheduler.period_sec,
             )
             state_name = self.framework.current_state_name
-            if frame is not None and self._test_owns_control() == test_owner:
+            if (frame is not None and self._test_owns_control() == test_owner
+                    and not self._stop_event.is_set()):
                 self._platform.publish_motor_frame(frame)
             self._sync_scheduler_owner()
         return ControlCycleResult(
@@ -452,6 +471,7 @@ class RobotControlRuntime:
         )
 
     def _maintenance_loop(self) -> None:
+        self._cpu_usage.sample()  # Baseline before the first maintenance wait.
         period_sec = 1.0 / self.config.maintenance_hz
         next_maintenance_at = time.monotonic() + period_sec
         next_statistics_at = time.monotonic() + self.config.statistics_interval_sec
@@ -477,12 +497,16 @@ class RobotControlRuntime:
                     finally:
                         self._framework_lock.release()
 
+            self._cpu_usage.sample()
             now = time.monotonic()
             if now >= next_statistics_at:
                 self._report_control_timing()
                 next_statistics_at = now + self.config.statistics_interval_sec
 
     def _enqueue_deadline_miss(self, miss: dict[str, object]) -> None:
+        # Wake-only misses remain visible in statistics, without warning I/O.
+        if float(miss["finish_late_ms"]) <= self.config.deadline_tolerance_sec * 1000.0:
+            return
         self._deadline_miss_queue.put(dict(miss))
 
     def _drain_deadline_misses(self) -> None:
@@ -657,6 +681,18 @@ class RobotControlRuntime:
             if cycles_since_report > 0
             else 0.0
         )
+        cpu = self._cpu_usage.snapshot()
+        if cpu.samples:
+            cpu_detail = (
+                f"整机CPU占用率：最低{cpu.minimum:.2f}%，"
+                f"最高{cpu.maximum:.2f}%，平均{cpu.average:.2f}%"
+                f"（有效采样{cpu.samples}次，无效采样{cpu.unavailable_samples}次）。"
+            )
+        else:
+            cpu_detail = (
+                "整机CPU占用率：不可用"
+                f"（有效采样0次，无效采样{cpu.unavailable_samples}次）。"
+            )
         message = (
             "控制周期性能统计："
             f"统计窗口内执行{cycles_since_report}个周期，"
@@ -670,10 +706,11 @@ class RobotControlRuntime:
             f"最大周期执行耗时{cycle['max']:.2f} ms，"
             f"最大周期间隔{interval['max']:.2f} ms。"
             f"目标周期{period_ms:.2f} ms，计算预算{budget_ms:.2f} ms；"
-            f"启动以来累计异常{total_misses}次。"
+            f"启动以来累计异常{total_misses}次。{cpu_detail}"
         )
         logged = self._log("info", message)
         if logged:
+            self._cpu_usage.snapshot(reset_window=True)
             self._last_reported_timing_totals[test_owner] = (
                 total_cycles,
                 total_budget_overruns,

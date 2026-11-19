@@ -26,6 +26,10 @@ class OnnxBackend(InferenceBackend):
 
         options = ort.SessionOptions()
         options.intra_op_num_threads = 4
+        # Models run periodically, not continuously. Sleeping workers avoid
+        # burning CPU between control ticks (also for cached inactive models).
+        options.add_session_config_entry("session.intra_op.allow_spinning", "0")
+        options.add_session_config_entry("session.inter_op.allow_spinning", "0")
         options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
         options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 

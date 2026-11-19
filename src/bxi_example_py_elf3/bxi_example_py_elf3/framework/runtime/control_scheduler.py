@@ -190,6 +190,10 @@ class ControlScheduler:
             f"CPU={cpu_description}，调度策略={priority_description}",
         )
 
+    def request_stop(self) -> None:
+        """Signal shutdown without joining (safe from ROS context callbacks)."""
+        self._stop_event.set()
+
     def stop(self, timeout_sec: float = 5.0) -> None:
         self._stop_event.set()
         thread = self._thread

@@ -1117,6 +1117,7 @@ def test_only_active_scheduler_consumes_events_and_publishes():
 
     runtime = object.__new__(RobotControlRuntime)
     runtime._framework_lock = RLock()
+    runtime._stop_event = Event()
     runtime.framework = Framework()
     runtime._platform = Platform()
     runtime.scheduler = SimpleNamespace(period_sec=0.02, set_enabled=lambda value: None)
