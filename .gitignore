@@ -43,6 +43,7 @@ htmlcov/
 !/src/bxi_example_py_elf3/test/test_imu_freshness.py
 !/src/bxi_example_py_elf3/test/test_imu_diagnostics.py
 !/src/bxi_example_py_elf3/test/test_control_efficiency.py
+!/src/bxi_example_py_elf3/test/test_joint_io.py
 
 # Local editor, agent and documentation workspaces
 /.vscode/

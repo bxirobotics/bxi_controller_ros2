@@ -213,7 +213,12 @@ def test_status_publisher_requests_graph_only_until_first_success(demo_class):
         assert decoded["step"] == 2
 
 
-def test_onnx_workers_sleep_and_io_binding_still_works(tmp_path):
+@pytest.mark.parametrize("threads", [None, "1"])
+def test_onnx_workers_sleep_and_io_binding_still_works(tmp_path, monkeypatch, threads):
+    if threads is None:
+        monkeypatch.delenv("BXI_ONNX_INTRA_OP_THREADS", raising=False)
+    else:
+        monkeypatch.setenv("BXI_ONNX_INTRA_OP_THREADS", threads)
     onnx = pytest.importorskip("onnx")
     pytest.importorskip("onnxruntime")
     from bxi_example_py_elf3.framework.inference.backends.onnxruntime import OnnxBackend
@@ -235,7 +240,7 @@ def test_onnx_workers_sleep_and_io_binding_still_works(tmp_path):
         options = backend._session.get_session_options()
         for key in ("session.intra_op.allow_spinning", "session.inter_op.allow_spinning"):
             assert options.get_session_config_entry(key) == "0"
-        assert options.intra_op_num_threads == 4
+        assert options.intra_op_num_threads == int(threads or 4)
         obs = np.arange(4, dtype=np.float32).reshape(1, 4)
         for _ in range(3):
             result = backend.run({"obs": obs})
@@ -244,6 +249,164 @@ def test_onnx_workers_sleep_and_io_binding_still_works(tmp_path):
         assert backend._io_binding is not None
     finally:
         backend.close()
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "1.5"])
+def test_onnx_threads_reject_invalid_values(monkeypatch, value):
+    from bxi_example_py_elf3.framework.inference.backends.onnxruntime import onnx_intra_op_threads
+
+    monkeypatch.setenv("BXI_ONNX_INTRA_OP_THREADS", value)
+    with pytest.raises(ValueError, match="BXI_ONNX_INTRA_OP_THREADS"):
+        onnx_intra_op_threads()
+
+
+@pytest.mark.parametrize("size", [29, 31])
+def test_simulation_reset_request_matches_robot_layout(size):
+    from bxi_example_py_elf3.elf3.model import ELF3_BODY_JOINTS, ELF3_RESET_JOINTS
+    from bxi_example_py_elf3.elf3.ros_messages import simulation_reset_request
+
+    layout = ELF3_BODY_JOINTS if size == 29 else ELF3_RESET_JOINTS
+    request = simulation_reset_request(layout)
+    assert request.header.frame_id == "elf3"
+    assert request.base_pose.position.z == request.base_pose.orientation.w == 1.0
+    assert tuple(request.joint_state.name) == layout.names
+    assert len(request.joint_state.name) == size
+    if size == 31:
+        assert layout.names == ELF3_BODY_JOINTS.names + ("head_z_joint", "head_y_joint")
+    for values in (request.joint_state.position, request.joint_state.velocity,
+                   request.joint_state.effort):
+        assert list(values) == [0.0] * size
+
+
+@pytest.mark.parametrize("size", [2, 31])
+@pytest.mark.parametrize("contiguous", [True, False], ids=["contiguous", "strided"])
+def test_motor_frame_wire_format(demo_class, size, contiguous):
+    from communication.msg import ActuatorCmds
+    from rclpy.serialization import deserialize_message, serialize_message
+    from bxi_example_py_elf3.elf3.model import ELF3_RESET_JOINTS
+    from bxi_example_py_elf3.framework.joints import JointLayout
+    from bxi_example_py_elf3.framework.mod_api.frame import MotorFrame
+
+    layout = JointLayout.create(["b", "a"]) if size == 2 else ELF3_RESET_JOINTS
+    data = np.arange(size * 5, dtype=np.float32)
+    fields = data.reshape(5, size) if contiguous else data.reshape(size, 5).T
+    frame = MotorFrame(layout, *fields)
+    node = Mock()
+    node._shutting_down.is_set.return_value = False
+    node.context.ok.return_value = True
+    node._motor_override.apply.return_value = frame
+    expected = ActuatorCmds()
+    expected.header.frame_id = "elf3"
+    expected.header.stamp.sec = 123
+    expected.header.stamp.nanosec = 456
+    node.get_clock.return_value.now.return_value.to_msg.return_value = expected.header.stamp
+    expected.actuators_name = list(layout.names)
+    for name, values in (("pos", frame.qpos), ("kp", frame.kp), ("kd", frame.kd),
+                         ("vel", frame.vel), ("torque", frame.torque)):
+        setattr(expected, name, values.tolist())
+    demo_class.publish_motor_frame(node, frame)
+    data.fill(-1)
+    actual, = node.act_pub.publish.call_args.args
+    assert deserialize_message(serialize_message(actual), ActuatorCmds) == expected
+
+
+class WritableArrayView:
+    def __init__(self, array):
+        self.array = array
+
+    def __array__(self, dtype=None):
+        return np.asarray(self.array, dtype=dtype)
+
+
+@pytest.mark.parametrize("wrap", [lambda a: a.T, lambda a: a.view(np.matrix), WritableArrayView],
+                         ids=["transposed", "matrix", "array_protocol"])
+def test_history_updates_output_across_wrap(wrap):
+    from bxi_example_py_elf3.framework.inference.history import HistoryBuffer
+
+    history = HistoryBuffer(3, 2)
+    samples = np.arange(12, dtype=np.float32).reshape(6, 2)
+    storage = np.empty((2, 3), dtype=np.float32)
+    output = wrap(storage)
+    view = np.asarray(output)
+    assert np.shares_memory(view, storage)
+    for index, item in enumerate(samples):
+        before = history.storage.copy()
+        history.preview_append_into(item, output)
+        expected = np.zeros((3, 2), dtype=np.float32)
+        recent = samples[max(0, index - 2):index + 1]
+        expected[-len(recent):] = recent
+        np.testing.assert_array_equal(view.ravel(), expected.ravel())
+        np.testing.assert_array_equal(history.storage, before)
+        history.append(item)
+        storage.fill(-1)
+        history.write_into(output)
+        np.testing.assert_array_equal(view.ravel(), expected.ravel())
+
+
+def test_history_rejects_output_that_would_only_write_to_a_copy():
+    from bxi_example_py_elf3.framework.inference.history import HistoryBuffer
+
+    with pytest.raises(TypeError):
+        HistoryBuffer(2, 1).write_into([np.float32(0), np.float32(0)])
+
+
+def test_model_inspection_preserves_direct_graph_inputs(tmp_path):
+    onnx = pytest.importorskip("onnx")
+    from bxi_example_py_elf3.framework.inference.model import ModelSpec
+
+    helper = onnx.helper
+    def tensor(name):
+        return helper.make_tensor_value_info(name, onnx.TensorProto.FLOAT, [1])
+
+    graph = helper.make_graph(
+        [helper.make_node("Identity", ["obs"], ["actions"])], "passthrough",
+        [tensor("obs"), tensor("reference"), tensor("unused")],
+        [tensor("actions"), tensor("reference")],
+    )
+    path = tmp_path / "passthrough.onnx"
+    onnx.save(helper.make_model(graph), str(path))
+    with patch.object(onnx, "load_model", wraps=onnx.load_model) as load:
+        spec = ModelSpec.portable_onnx(path, input_names=(), output_names=())
+    assert spec.artifacts[0].runtime_input_names == ("obs", "reference")
+    load.assert_called_once()
+
+
+def test_resource_shutdown_drains_accepted_loads(tmp_path):
+    from bxi_example_py_elf3.framework.mod_api.resource import ResourceKey
+    from bxi_example_py_elf3.framework.runtime.resource_manager import ResourceManager
+
+    manager = ResourceManager()
+    started, release = Event(), Event()
+    first, second = ResourceKey("test/first"), ResourceKey("test/second")
+    closed = []
+
+    def slow_factory(_):
+        started.set()
+        assert release.wait(2)
+        return SimpleNamespace(close=lambda: closed.append(first))
+
+    manager.register(first, owner="test", root=tmp_path, factory=slow_factory, policy="startup")
+    manager.register(second, owner="test", root=tmp_path, policy="on_demand",
+                     factory=lambda _: SimpleNamespace(close=lambda: closed.append(second)))
+    startup = Thread(target=manager.load_startup)
+    startup.start()
+    try:
+        assert started.wait(2)
+        with pytest.raises(RuntimeError, match="after startup"):
+            manager.register(ResourceKey("test/late"), owner="test", root=tmp_path,
+                             factory=slow_factory, policy="startup")
+        manager.request(second)
+        worker = Thread(target=manager.close)
+        worker.start()
+    finally:
+        release.set()
+        startup.join(2)
+        manager.close()
+    worker.join(2)
+    assert not startup.is_alive() and not worker.is_alive()
+    assert closed == [second, first]
+    with pytest.raises(RuntimeError, match="closed"):
+        manager.request(first)
 
 
 def _cpu_sample(sampler, path, *, user, idle, iowait=0, guest=0):

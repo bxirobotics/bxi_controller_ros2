@@ -17,53 +17,22 @@ import os
 import math
 from collections import deque
 from std_msgs.msg import Header
-from geometry_msgs.msg import Pose
-from sensor_msgs.msg import JointState
 
 import onnxruntime as ort
+from bxi_example_py_elf3.framework.mod_api import MotorFrame
+from bxi_example_py_elf3.framework.inference.backends.onnxruntime import periodic_session_options
 import onnx
 import ast
 from scipy.spatial.transform import Rotation
 
-robot_name = "elf3"
+from bxi_example_py_elf3.elf3.model import ELF3_BODY_JOINTS, ROBOT_NAME as robot_name
+from bxi_example_py_elf3.elf3.ros_messages import (
+    motor_command, robot_reset_request, simulation_reset_request,
+)
 
-dof_num = 29
+dof_num = ELF3_BODY_JOINTS.dof_num
+joint_name = ELF3_BODY_JOINTS.names
 
-joint_name = (
-    "waist_y_joint",
-    "waist_x_joint",
-    "waist_z_joint",
-    
-    "l_hip_y_joint",   # 左腿_髋关节_z轴
-    "l_hip_x_joint",   # 左腿_髋关节_x轴
-    "l_hip_z_joint",   # 左腿_髋关节_y轴
-    "l_knee_y_joint",   # 左腿_膝关节_y轴
-    "l_ankle_y_joint",   # 左腿_踝关节_y轴
-    "l_ankle_x_joint",   # 左腿_踝关节_x轴
-
-    "r_hip_y_joint",   # 右腿_髋关节_z轴    
-    "r_hip_x_joint",   # 右腿_髋关节_x轴
-    "r_hip_z_joint",   # 右腿_髋关节_y轴
-    "r_knee_y_joint",   # 右腿_膝关节_y轴
-    "r_ankle_y_joint",   # 右腿_踝关节_y轴
-    "r_ankle_x_joint",   # 右腿_踝关节_x轴
-
-    "l_shoulder_y_joint",   # 左臂_肩关节_y轴
-    "l_shoulder_x_joint",   # 左臂_肩关节_x轴
-    "l_shoulder_z_joint",   # 左臂_肩关节_z轴
-    "l_elbow_y_joint",   # 左臂_肘关节_y轴
-    "l_wrist_x_joint",
-    "l_wrist_y_joint",
-    "l_wrist_z_joint",
-    
-    "r_shoulder_y_joint",   # 右臂_肩关节_y轴   
-    "r_shoulder_x_joint",   # 右臂_肩关节_x轴
-    "r_shoulder_z_joint",   # 右臂_肩关节_z轴
-    "r_elbow_y_joint",    # 右臂_肘关节_y轴
-    "r_wrist_x_joint",
-    "r_wrist_y_joint",
-    "r_wrist_z_joint",
-    )   
 
 def quaternion_to_euler_array(quat):
     # Ensure quaternion is in the correct format [x, y, z, w]
@@ -195,9 +164,7 @@ class BxiExample(Node):
         ] if ort.get_device() == 'GPU' else ['CPUExecutionProvider']
         
         # 启用线程优化配置
-        options = ort.SessionOptions()
-        options.intra_op_num_threads = 4  # 设置计算线程数
-        options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        options = periodic_session_options()
         
         # 创建推理会话
         self.session = ort.InferenceSession(
@@ -251,16 +218,8 @@ class BxiExample(Node):
             soft_joint_kp = self.joint_stiffness * soft_start #* 0.2
             soft_joint_kd = self.joint_damping #* 0.2
                 
-            msg = bxiMsg.ActuatorCmds()
-            msg.header.frame_id = robot_name
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.actuators_name = joint_name
-            msg.pos = self.default_joint_pos.tolist()
-            msg.vel = np.zeros(dof_num, dtype=np.float32).tolist()
-            msg.torque = np.zeros(dof_num, dtype=np.float32).tolist()
-            msg.kp = soft_joint_kp.tolist()
-            msg.kd = soft_joint_kd.tolist()
-            self.act_pub.publish(msg)
+            frame = MotorFrame(ELF3_BODY_JOINTS, self.default_joint_pos, soft_joint_kp, soft_joint_kd)
+            self.act_pub.publish(motor_command(frame, self.get_clock().now().to_msg()))
             
         elif self.step == 2:
             with self.lock_in:
@@ -316,53 +275,23 @@ class BxiExample(Node):
             kp = self.joint_stiffness #* 0.9
             kd = self.joint_damping #* 0.2
             
-            msg = bxiMsg.ActuatorCmds()
-            msg.header.frame_id = robot_name
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.actuators_name = joint_name
-            msg.pos = qpos.tolist()
-            msg.vel = np.zeros(dof_num, dtype=np.float32).tolist()
-            msg.torque = np.zeros(dof_num, dtype=np.float32).tolist()
-            msg.kp = kp.tolist()
-            msg.kd = kd.tolist()
-            self.act_pub.publish(msg)
+            frame = MotorFrame(ELF3_BODY_JOINTS, qpos, kp, kd)
+            self.act_pub.publish(motor_command(frame, self.get_clock().now().to_msg()))
             self.last_action=self.action.copy()
 
         self.loop_count += 1
 
     def robot_reset(self, reset_step, release):
-        req = bxiSrv.RobotReset.Request()
-        req.reset_step = reset_step
-        req.release = release
-        req.header.frame_id = robot_name
-    
+        req = robot_reset_request(reset_step, release)
+
         while not self.rest_srv.wait_for_service(timeout_sec=1.0):
             print('service not available, waiting again...')
             
         self.rest_srv.call_async(req)
         
     def sim_robot_reset(self):        
-        req = bxiSrv.SimulationReset.Request()
-        req.header.frame_id = robot_name
+        req = simulation_reset_request(ELF3_BODY_JOINTS)
 
-        base_pose = Pose()
-        base_pose.position.x = 0.0
-        base_pose.position.y = 0.0
-        base_pose.position.z = 1.0
-        base_pose.orientation.x = 0.0
-        base_pose.orientation.y = 0.0
-        base_pose.orientation.z = 0.0
-        base_pose.orientation.w = 1.0        
-
-        joint_state = JointState()
-        joint_state.name = joint_name
-        joint_state.position = np.zeros(dof_num, dtype=np.float32).tolist()
-        joint_state.velocity = np.zeros(dof_num, dtype=np.float32).tolist()
-        joint_state.effort = np.zeros(dof_num, dtype=np.float32).tolist()
-        
-        req.base_pose = base_pose
-        req.joint_state = joint_state
-    
         while not self.sim_rest_srv.wait_for_service(timeout_sec=1.0):
             print('service not available, waiting again...')
             

@@ -48,7 +48,7 @@ class ResourceManager:
         self._requests: Queue[_ResourceProvider[object] | None] = Queue()
         self._worker_ready = Event()
         self._worker_error: BaseException | None = None
-        self._startup_complete = False
+        self._startup_started = False
         self._closed = False
         self._worker = Thread(
             target=self._run_worker,
@@ -82,42 +82,40 @@ class ResourceManager:
             raise ValueError(
                 f"resource '{key.id}' policy must be 'startup' or 'on_demand'"
             )
-        if self._closed:
-            raise RuntimeError("resource manager is closed")
-        if self._startup_complete and policy == "startup":
-            raise RuntimeError(
-                f"startup resource '{key.id}' was registered after startup loading"
-            )
-        previous = self._providers.get(key.id)
-        if previous is not None:
-            raise ValueError(
-                f"duplicate resource '{key.id}' from '{previous.owner}' and '{owner}'"
-            )
-        provider = _ResourceProvider(key, owner, root, factory, policy)
-        self._providers[key.id] = cast(_ResourceProvider[object], provider)
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("resource manager is closed")
+            if self._startup_started and policy == "startup":
+                raise RuntimeError(
+                    f"startup resource '{key.id}' was registered after startup loading began"
+                )
+            previous = self._providers.get(key.id)
+            if previous is not None:
+                raise ValueError(
+                    f"duplicate resource '{key.id}' from '{previous.owner}' and '{owner}'"
+                )
+            provider = _ResourceProvider(key, owner, root, factory, policy)
+            self._providers[key.id] = cast(_ResourceProvider[object], provider)
 
     def handle(self, key: ResourceKey[ResourceT]) -> ResourceHandle[ResourceT]:
         self._provider(key)
         return ResourceHandle(self, key)
 
     def load_startup(self) -> None:
-        providers = tuple(
-            provider
-            for provider in self._providers.values()
-            if provider.policy == "startup"
-        )
-        try:
-            for provider in providers:
-                self._request_provider(provider)
-            for provider in providers:
-                provider.completed.wait()
-                if provider.error is not None:
-                    raise RuntimeError(
-                        f"cannot prepare startup resource '{provider.key.id}': "
-                        f"{provider.error}"
-                    ) from provider.error
-        finally:
-            self._startup_complete = True
+        with self._lock:
+            self._startup_started = True
+            providers = tuple(
+                provider for provider in self._providers.values() if provider.policy == "startup"
+            )
+        for provider in providers:
+            self._request_provider(provider)
+        for provider in providers:
+            provider.completed.wait()
+            if provider.error is not None:
+                raise RuntimeError(
+                    f"cannot prepare startup resource '{provider.key.id}': "
+                    f"{provider.error}"
+                ) from provider.error
 
     def request(self, key: ResourceKey[ResourceT]) -> None:
         self._request_provider(self._provider(key))
@@ -142,12 +140,14 @@ class ResourceManager:
         return cast(ResourceT, provider.instance)
 
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        for provider in self._providers.values():
-            if provider.status == "loading":
-                provider.completed.wait()
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._requests.put(None)
+        # The FIFO sentinel follows every accepted load. No factory can still
+        # publish an instance once the worker has joined.
+        self._worker.join()
 
         first_error: Exception | None = None
         for provider in reversed(tuple(self._providers.values())):
@@ -164,10 +164,6 @@ class ResourceManager:
             provider.instance = None
             provider.status = "unloaded"
 
-        self._requests.put(None)
-        self._worker.join(timeout=5.0)
-        if self._worker.is_alive() and first_error is None:
-            first_error = RuntimeError("resource worker did not stop within timeout")
         if first_error is not None:
             raise first_error
 
@@ -181,9 +177,9 @@ class ResourceManager:
         return cast(_ResourceProvider[ResourceT], provider)
 
     def _request_provider(self, provider: _ResourceProvider[object]) -> None:
-        if self._closed:
-            raise RuntimeError("resource manager is closed")
         with self._lock:
+            if self._closed:
+                raise RuntimeError("resource manager is closed")
             if provider.status != "unloaded":
                 return
             provider.status = "loading"
