@@ -8,21 +8,12 @@ import numpy as np
 
 from bxi_example_py_elf3.framework.joints import (
     CompiledJointMap,
+    ExactJointTargetAssembler,
     JointLayout,
     JointStateBuffer,
     JointStateView,
-    JointTargetBuffer,
     JointTargetView,
 )
-
-
-def _same_names(values: Sequence[str], expected: tuple[str, ...]) -> bool:
-    if len(values) != len(expected):
-        return False
-    for index in range(len(expected)):
-        if values[index] != expected[index]:
-            return False
-    return True
 
 
 class NamedJointStateSource:
@@ -34,14 +25,12 @@ class NamedJointStateSource:
         *,
         dtype: np.dtype | type = np.float64,
     ) -> None:
-        self._canonical_layout = canonical_layout
         self._dtype = np.dtype(dtype)
         self._buffer = (
             JointStateBuffer(canonical_layout, dtype=self._dtype)
             if canonical_layout is not None
             else None
         )
-        self._message_names: tuple[str, ...] | None = None
         self._message_map: CompiledJointMap | None = None
 
     @property
@@ -68,23 +57,19 @@ class NamedJointStateSource:
         *,
         timestamp_ns: int = 0,
     ) -> JointStateView:
-        if self._message_names is None or not _same_names(names, self._message_names):
-            message_layout = JointLayout.create(names, label="incoming joint state")
-            if self._buffer is None:
-                canonical = self._canonical_layout or message_layout
-                self._buffer = JointStateBuffer(canonical, dtype=self._dtype)
-            self._message_map = CompiledJointMap.compile(
-                message_layout,
-                self._buffer.layout,
-            )
-            self._message_names = message_layout.names
-
-        assert self._buffer is not None
-        assert self._message_map is not None
-        self._message_map.map_into(position, self._buffer.position)
-        self._message_map.map_into(velocity, self._buffer.velocity)
-        self._buffer.view.timestamp_ns = int(timestamp_ns)
-        return self._buffer.view
+        names = tuple(names)
+        mapping = self._message_map
+        buffer = self._buffer
+        if mapping is None or names != mapping.source.names:
+            incoming = JointLayout.create(names, label="incoming joint state")
+            if buffer is None:
+                buffer = JointStateBuffer(incoming, dtype=self._dtype)
+            mapping = CompiledJointMap.compile(incoming, buffer.layout)
+        assert buffer is not None
+        view = buffer.update(position, velocity, timestamp_ns=timestamp_ns, mapping=mapping)
+        self._buffer = buffer
+        self._message_map = mapping
+        return view
 
 
 class FixedOrderJointStateSource(JointStateBuffer):
@@ -125,27 +110,14 @@ class FixedOrderJointCommandEncoder:
 
     def __init__(self, hardware_layout: JointLayout) -> None:
         self.hardware_layout = hardware_layout
-        self._buffer = JointTargetBuffer(hardware_layout)
-        self._source_layout: JointLayout | None = None
-        self._mapping: CompiledJointMap | None = None
+        self._assembler = ExactJointTargetAssembler(hardware_layout)
 
     @property
     def target(self) -> JointTargetView:
-        return self._buffer.view
+        return self._assembler.target
 
     def encode(self, target: JointTargetView) -> JointTargetView:
-        if self._source_layout != target.layout:
-            self._mapping = CompiledJointMap.compile(
-                target.layout,
-                self.hardware_layout,
-                require_exact=True,
-            )
-            self._source_layout = target.layout
-        assert self._mapping is not None
-        self._mapping.map_into(target.position, self._buffer.position)
-        self._mapping.map_into(target.kp, self._buffer.kp)
-        self._mapping.map_into(target.kd, self._buffer.kd)
-        return self._buffer.view
+        return self._assembler.compose(target)
 
 
 __all__ = [

@@ -76,7 +76,11 @@ TEST(ConfigValidation, EnforcesRgbdDependencies)
 
     config.enable_sync = true;
     config.align_depth = true;
+#if BXI_DEPTH_CAMERA_HAS_RGBD_MSG
     EXPECT_NO_THROW(config.validate());
+#else
+    EXPECT_THROW(config.validate(), std::invalid_argument);
+#endif
 }
 
 TEST(ConfigValidation, EnforcesImuSyncDependencies)

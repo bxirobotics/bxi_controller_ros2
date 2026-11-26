@@ -693,30 +693,20 @@ void CameraWorker::publish_pointcloud(const std::vector<PointXYZRGB> &points,
         std::any_of(points.begin(), points.end(),
                     [](const PointXYZRGB &point) { return point.has_color; });
     const std::size_t point_step = with_color ? 16U : 12U;
-    std::vector<std::size_t> selected;
-    selected.reserve(points.size());
+    const auto valid_point = [this](const PointXYZRGB &point) {
+        return std::isfinite(point.x) && std::isfinite(point.y) &&
+               std::isfinite(point.z) && point.z > 0.0F &&
+               (point.texture_valid || config_.pointcloud_allow_no_texture_points);
+    };
+    std::size_t output_size = points.size();
     if (config_.pointcloud_ordered) {
         if (points.size() != static_cast<std::size_t>(width) * height) {
             throw std::runtime_error(
                 "ordered point cloud size does not match frame dimensions");
         }
-        selected.resize(points.size());
-        for (std::size_t index = 0; index < points.size(); ++index) {
-            selected[index] = index;
-        }
     } else {
-        for (std::size_t index = 0; index < points.size(); ++index) {
-            const auto &point = points[index];
-            const bool geometric = std::isfinite(point.x) &&
-                                   std::isfinite(point.y) &&
-                                   std::isfinite(point.z) && point.z > 0.0F;
-            const bool textured = point.texture_valid ||
-                                  config_.pointcloud_allow_no_texture_points;
-            if (geometric && textured) {
-                selected.push_back(index);
-            }
-        }
-        width = static_cast<std::uint32_t>(selected.size());
+        output_size = std::count_if(points.begin(), points.end(), valid_point);
+        width = static_cast<std::uint32_t>(output_size);
         height = 1;
     }
 
@@ -745,18 +735,17 @@ void CameraWorker::publish_pointcloud(const std::vector<PointXYZRGB> &points,
         field.count = 1;
         message.fields.push_back(field);
     }
-    message.data.assign(selected.size() * point_step, 0);
+    message.data.resize(output_size * point_step);
     const float nan = std::numeric_limits<float>::quiet_NaN();
-    for (std::size_t output_index = 0; output_index < selected.size();
-         ++output_index) {
-        const auto &point = points[selected[output_index]];
-        const bool valid =
-            std::isfinite(point.x) && std::isfinite(point.y) &&
-            std::isfinite(point.z) && point.z > 0.0F &&
-            (point.texture_valid || config_.pointcloud_allow_no_texture_points);
+    std::size_t output_index = 0;
+    for (const auto &point : points) {
+        const bool valid = valid_point(point);
+        if (!valid && !config_.pointcloud_ordered) {
+            continue;
+        }
         const float xyz[3] = { valid ? point.x : nan, valid ? point.y : nan,
                                valid ? point.z : nan };
-        auto *destination = message.data.data() + output_index * point_step;
+        auto *destination = message.data.data() + output_index++ * point_step;
         std::memcpy(destination, xyz, sizeof(xyz));
         if (with_color) {
             const std::uint32_t rgb =

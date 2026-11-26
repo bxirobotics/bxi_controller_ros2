@@ -106,7 +106,8 @@ class ModelSpec:
         rknn_model_path = (
             Path(rknn_path) if rknn_path is not None else onnx_path.with_suffix(".rknn")
         )
-        metadata, input_shapes, output_shapes = _read_onnx_description(onnx_path)
+        model = _load_onnx_for_inspection(onnx_path)
+        metadata, input_shapes, output_shapes = _read_onnx_description(model)
         inferred_input_names = tuple(name for name, _shape in input_shapes)
         inferred_output_names = tuple(name for name, _shape in output_shapes)
         logical_input_names = input_names or inferred_input_names
@@ -127,7 +128,7 @@ class ModelSpec:
                 f"{sorted(unknown_rknn_outputs)}"
             )
         rknn_inputs = (
-            _required_onnx_inputs(onnx_path, physical_rknn_outputs)
+            _required_onnx_inputs(model, physical_rknn_outputs)
             or logical_input_names
         )
 
@@ -175,20 +176,25 @@ def _value_info_shape(value_info) -> tuple[object, ...]:
     return tuple(_dimension_value(item) for item in tensor_type.shape.dim)
 
 
+def _load_onnx_for_inspection(path: Path):
+    if path.suffix.lower() != ".onnx" or importlib.util.find_spec("onnx") is None:
+        return None
+    try:
+        import onnx
+
+        return onnx.load_model(str(path), load_external_data=False)
+    except Exception:
+        return None
+
+
 def _read_onnx_description(
-    path: Path,
+    model,
 ) -> tuple[
     tuple[tuple[str, str], ...],
     tuple[tuple[str, tuple[object, ...]], ...],
     tuple[tuple[str, tuple[object, ...]], ...],
 ]:
-    if path.suffix.lower() != ".onnx" or importlib.util.find_spec("onnx") is None:
-        return (), (), ()
-    try:
-        import onnx
-
-        model = onnx.load_model(str(path), load_external_data=False)
-    except Exception:
+    if model is None:
         return (), (), ()
     metadata = tuple((item.key, item.value) for item in model.metadata_props)
     input_shapes = tuple(
@@ -200,41 +206,14 @@ def _read_onnx_description(
     return metadata, input_shapes, output_shapes
 
 
-def _required_onnx_inputs(
-    path: Path,
-    output_names: tuple[str, ...],
-) -> tuple[str, ...]:
-    if (
-        path.suffix.lower() != ".onnx"
-        or not output_names
-        or importlib.util.find_spec("onnx") is None
-    ):
+def _required_onnx_inputs(model, output_names: tuple[str, ...]) -> tuple[str, ...]:
+    if model is None:
         return ()
-    try:
-        import onnx
-
-        model = onnx.load_model(str(path), load_external_data=False)
-    except Exception:
-        return ()
-    graph_inputs = {item.name for item in model.graph.input}
-    required_outputs = set(output_names)
-    needed_tensors = set(required_outputs)
-    needed_inputs: set[str] = set()
+    needed = set(output_names)
     for node in reversed(model.graph.node):
-        produced = set(node.output)
-        if not produced.intersection(needed_tensors):
-            continue
-        for name in node.input:
-            if not name:
-                continue
-            if name in graph_inputs:
-                needed_inputs.add(name)
-            else:
-                needed_tensors.add(name)
-    ordered = tuple(
-        item.name for item in model.graph.input if item.name in needed_inputs
-    )
-    return ordered
+        if not needed.isdisjoint(node.output):
+            needed.update(node.input)
+    return tuple(item.name for item in model.graph.input if item.name in needed)
 
 
 __all__ = [

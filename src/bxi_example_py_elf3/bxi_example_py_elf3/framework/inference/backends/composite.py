@@ -124,7 +124,7 @@ def create_onnx_output_sidecar(
         ) from exc
 
     model = onnx.load_model(str(source_path), load_external_data=True)
-    required_inputs = _required_onnx_inputs(source_path, output_names)
+    required_inputs = _required_onnx_inputs(model, output_names)
     extractor = onnx.utils.Extractor(model)
     extracted = extractor.extract_model(list(required_inputs), list(output_names))
     artifact = OnnxArtifact(source_path, providers=providers)

@@ -4,12 +4,36 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import importlib.util
+import os
 
 import numpy as np
 from numpy.typing import NDArray
 
 from .base import BackendAvailability, BackendFactory, InferenceBackend, TensorMap
 from ..model import ModelArtifact, ModelSpec, OnnxArtifact
+
+
+def onnx_intra_op_threads() -> int:
+    value = os.environ.get("BXI_ONNX_INTRA_OP_THREADS", "4")
+    try:
+        threads = int(value)
+    except ValueError:
+        threads = 0
+    if threads < 1:
+        raise ValueError(f"BXI_ONNX_INTRA_OP_THREADS must be a positive integer, got {value!r}")
+    return threads
+
+
+def periodic_session_options():
+    import onnxruntime as ort
+
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = onnx_intra_op_threads()
+    # Periodic controllers leave workers idle between inferences.
+    options.add_session_config_entry("session.intra_op.allow_spinning", "0")
+    options.add_session_config_entry("session.inter_op.allow_spinning", "0")
+    options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+    return options
 
 
 class OnnxBackend(InferenceBackend):
@@ -24,13 +48,7 @@ class OnnxBackend(InferenceBackend):
     ) -> None:
         import onnxruntime as ort
 
-        options = ort.SessionOptions()
-        options.intra_op_num_threads = 4
-        # Models run periodically, not continuously. Sleeping workers avoid
-        # burning CPU between control ticks (also for cached inactive models).
-        options.add_session_config_entry("session.intra_op.allow_spinning", "0")
-        options.add_session_config_entry("session.inter_op.allow_spinning", "0")
-        options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        options = periodic_session_options()
         options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
         providers = list(artifact.providers) if artifact.providers else None
@@ -164,4 +182,4 @@ class OnnxBackendFactory(BackendFactory):
         return OnnxBackend(artifact, spec)
 
 
-__all__ = ["OnnxBackend", "OnnxBackendFactory"]
+__all__ = ["OnnxBackend", "OnnxBackendFactory", "onnx_intra_op_threads", "periodic_session_options"]
