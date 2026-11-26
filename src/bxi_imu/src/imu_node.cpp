@@ -162,6 +162,7 @@ public:
       quaternion_norm_tolerance_ = 0.1;
     }
     sanitize_timing_parameters();
+    configure_axis_mapping();
     imu_pub_ = create_publisher<sensor_msgs::msg::Imu>(imu_topic_, rclcpp::SensorDataQoS());
     euler_pub_ = create_publisher<geometry_msgs::msg::Vector3Stamped>(
       euler_topic_,
@@ -862,12 +863,12 @@ private:
     sample.pressure.header.frame_id = frame_id_;
   }
 
-  void transform_sample_to_robot_frame(ImuSample & sample) const
+  void configure_axis_mapping()
   {
-    const auto mapping = parse_axis_mapping(axis_mapping_);
-    if (!mapping.has_value()) {
+    mapping_ = parse_axis_mapping(axis_mapping_);
+    if (!mapping_) {
       if (axis_mapping_ != "identity") {
-        RCLCPP_WARN_ONCE(
+        RCLCPP_WARN(
           get_logger(),
           "unsupported axis_mapping='%s'; using identity mapping",
           axis_mapping_.c_str());
@@ -875,12 +876,25 @@ private:
       return;
     }
 
-    const auto rotate = [&mapping](double x, double y, double z) {
+    // Orientation uses the inverse coordinate transform on the right.
+    std::array<std::array<double, 3>, 3> inverse_matrix{};
+    for (std::size_t row = 0; row < 3; ++row) {
+      inverse_matrix[mapping_->indices[row]][row] = mapping_->signs[row];
+    }
+    mapping_quaternion_ = quaternion_from_matrix(inverse_matrix);
+  }
+
+  void transform_sample_to_robot_frame(ImuSample & sample) const
+  {
+    if (!mapping_) {
+      return;
+    }
+    const auto rotate = [this](double x, double y, double z) {
       const std::array<double, 3> input{x, y, z};
       return std::array<double, 3>{
-        mapping->signs[0] * input[mapping->indices[0]],
-        mapping->signs[1] * input[mapping->indices[1]],
-        mapping->signs[2] * input[mapping->indices[2]]};
+        mapping_->signs[0] * input[mapping_->indices[0]],
+        mapping_->signs[1] * input[mapping_->indices[1]],
+        mapping_->signs[2] * input[mapping_->indices[2]]};
     };
 
     const auto acceleration = rotate(
@@ -907,15 +921,8 @@ private:
     sample.magnetic.magnetic_field.y = magnetic[1];
     sample.magnetic.magnetic_field.z = magnetic[2];
 
-    // The orientation uses the inverse coordinate transform on the right,
-    // matching the convention used by the existing fixed-axis mapping.
-    std::array<std::array<double, 3>, 3> inverse_matrix{};
-    for (std::size_t row = 0; row < 3; ++row) {
-      inverse_matrix[mapping->indices[row]][row] = mapping->signs[row];
-    }
-    const auto mapping_quaternion = quaternion_from_matrix(inverse_matrix);
     sample.imu.orientation = multiply_quaternions(
-      sample.imu.orientation, mapping_quaternion);
+      sample.imu.orientation, mapping_quaternion_);
 
       // Recompute Euler angles from the transformed quaternion. Roll, pitch,
       // and yaw cannot be remapped by simply swapping their three components.
@@ -1130,6 +1137,8 @@ private:
   std::string temperature_topic_;
   std::string pressure_topic_;
   std::string axis_mapping_;
+  std::optional<AxisMapping> mapping_;
+  geometry_msgs::msg::Quaternion mapping_quaternion_;
   double imu_frequency_hz_{200.0};
   double imu_timeout_multiplier_{1.5};
   std::string imu_freshness_mode_{"observe"};

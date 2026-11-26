@@ -197,22 +197,55 @@ def test_imu_wrapper_preserves_validation_and_counts_accepted_rejected(demo_clas
     node._next_imu_stamp_warning = float("inf")
     node._imu_invalid_frame_count = 0
     node._next_imu_invalid_warning = float("inf")
-    node._imu_first_received_logged = True
-    node.quat_xyzw = np.zeros(4)
-    node.quat_wxyz = np.zeros(4)
-    node.omega = np.zeros(3)
-    node.linear_acceleration = np.zeros(3)
     callback = node._imu_diagnostics.wrap("imu", lambda m: demo_class.imu_callback(node, m))
-    callback(message())
+    valid = message()
+    valid.orientation = SimpleNamespace(x=0.5, y=-0.5, z=-0.5, w=0.5)
+    valid.angular_velocity.x = 1.25
+    callback(valid)
     accepted_at = node._imu_last_received_at
+    accepted_sample = node._imu_sample
+    valid.angular_velocity.x = 3.0
     bad = message()
     bad.angular_velocity.x = float("nan")
     callback(bad)
     assert node._imu_last_received_at == accepted_at
+    assert node._imu_sample is accepted_sample
+    assert accepted_sample == ((0.5, -0.5, -0.5, 0.5), (1.25, 0.0, 0.0), (0.0, 0.0, 9.8))
     result = node._imu_diagnostics.snapshot()
     assert result["accepted"] == 1 and result["rejected"] == 1
     assert result["callback_counts"]["imu"] == 2
     assert result["active_callbacks"] == {}
+
+
+def test_snapshot_uses_one_imu_frame_and_keeps_it_until_next_cycle(demo_class):
+    from bxi_example_py_elf3.framework.platform.joint_io import NamedJointStateSource
+    node = platform()
+    node.imu_required = False
+    node._check_imu_runtime_safety = lambda: None
+    node._joint_source = NamedJointStateSource()
+    node._joint_source.update(["knee"], [0.0], [0.0])
+    node._joint_snapshot = None
+    node._quat_xyzw_snapshot = np.empty(4)
+    node._quat_wxyz_snapshot = np.empty(4)
+    node._omega_snapshot = np.empty(3)
+    node._linear_acceleration_snapshot = np.empty(3)
+    node.raw_cmd_vel = np.zeros(3)
+    node._cmd_snapshot = node.raw_cmd_vel.copy()
+    node.pending_remote_events = []
+
+    msg = message()
+    msg.orientation = SimpleNamespace(x=0.5, y=-0.5, z=0.5, w=-0.5)
+    msg.angular_velocity.x = 3.0
+    demo_class.imu_callback(node, msg)
+    obs, _ = demo_class.snapshot_control_inputs(node)
+    demo_class.imu_callback(node, message())
+    np.testing.assert_array_equal(obs.quat_xyzw, [0.5, -0.5, 0.5, -0.5])
+    np.testing.assert_array_equal(obs.quat_wxyz, [-0.5, 0.5, -0.5, 0.5])
+    np.testing.assert_array_equal(obs.omega, [3.0, 0.0, 0.0])
+    np.testing.assert_array_equal(obs.linear_acceleration, [0.0, 0.0, 9.8])
+    next_obs, _ = demo_class.snapshot_control_inputs(node)
+    assert next_obs is obs
+    np.testing.assert_array_equal(next_obs.quat_wxyz, [1.0, 0.0, 0.0, 0.0])
 
 
 def test_callback_diagnostics_remain_readable_while_input_lock_is_blocked(demo_class):
@@ -234,11 +267,6 @@ def test_callback_diagnostics_remain_readable_while_input_lock_is_blocked(demo_c
     node._imu_stamp_observer = ImuStampObserver()
     node._imu_stamp_warning_count = 0
     node._next_imu_stamp_warning = float("inf")
-    node._imu_first_received_logged = True
-    node.quat_xyzw = np.zeros(4)
-    node.quat_wxyz = np.zeros(4)
-    node.omega = np.zeros(3)
-    node.linear_acceleration = np.zeros(3)
     errors = []
     def callback():
         try:

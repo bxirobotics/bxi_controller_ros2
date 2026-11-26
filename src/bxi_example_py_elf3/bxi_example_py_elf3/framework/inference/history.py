@@ -12,8 +12,7 @@ class HistoryBuffer:
     """Fixed-size, oldest-to-newest history backed by a ring buffer.
 
     ``append`` never allocates.  ``write_into`` linearizes the ring into a
-    caller-owned, contiguous buffer because inference runtimes generally need
-    chronological contiguous input.
+    caller-owned, writable buffer in chronological order.
     """
 
     def __init__(
@@ -76,28 +75,19 @@ class HistoryBuffer:
         self._initialized = True
 
     def write_into(self, output: object) -> None:
-        target = np.asarray(output)
-        if target.size != self._data.size:
-            raise ValueError(
-                f"history output has {target.size} elements, expected {self._data.size}"
-            )
-        if target.dtype != self.dtype:
-            raise TypeError(
-                f"history output dtype is {target.dtype}, expected {self.dtype}"
-            )
-        flat = target.reshape(-1)
-        split = self._next_index
-        tail = self._data[split:]
-        tail_size = int(tail.size)
-        flat[:tail_size] = tail.reshape(-1)
-        if split:
-            flat[tail_size:] = self._data[:split].reshape(-1)
+        self._write(output, None)
 
     def preview_append_into(self, value: object, output: object) -> None:
         """Linearize the history as if ``value`` were appended, without mutation."""
         array = np.asarray(value)
         self._validate_item(array)
+        self._write(output, array)
+
+    def _write(self, output: object, pending: NDArray[np.generic] | None) -> None:
         target = np.asarray(output)
+        # An array provider can return its own storage; a plain sequence converts to a copy.
+        if target is not output and target.flags.owndata and not hasattr(output, "__array__"):
+            raise TypeError("history output must expose writable array storage")
         if target.size != self._data.size:
             raise ValueError(
                 f"history output has {target.size} elements, expected {self._data.size}"
@@ -106,21 +96,17 @@ class HistoryBuffer:
             raise TypeError(
                 f"history output dtype is {target.dtype}, expected {self.dtype}"
             )
-        flat = target.reshape(-1)
-        item_size = int(array.size)
-        write = 0
+        # reshape can silently copy a transposed view. Write to its flat iterator instead.
+        flat = target.reshape(-1) if target.flags.c_contiguous else target.flat
         split = self._next_index
-        if split + 1 < self.length:
-            values = self._data[split + 1 :]
-            size = int(values.size)
-            flat[write : write + size] = values.reshape(-1)
-            write += size
+        start = split if pending is None else split + 1
+        tail = self._data[start:].reshape(-1)
+        flat[:tail.size] = tail
         if split:
-            values = self._data[:split]
-            size = int(values.size)
-            flat[write : write + size] = values.reshape(-1)
-            write += size
-        flat[write : write + item_size] = array.reshape(-1)
+            head = self._data[:split].reshape(-1)
+            flat[tail.size:tail.size + head.size] = head
+        if pending is not None:
+            flat[-pending.size:] = pending.reshape(-1)
 
     def _validate_item(self, value: NDArray[np.generic]) -> None:
         if value.shape != self.item_shape:

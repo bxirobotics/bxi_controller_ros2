@@ -1,7 +1,6 @@
 import rclpy
 from rclpy.node import Node
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.qos import QoSProfile, qos_profile_sensor_data
 from rclpy.time import Time
 import communication.msg as bxiMsg
@@ -30,39 +29,29 @@ class BxiExample(Node):
         qos = QoSProfile(depth=1, durability=qos_profile_sensor_data.durability, reliability=qos_profile_sensor_data.reliability)
         self.joy_pub = self.create_publisher(bxiMsg.MotionCommands, 'motion_commands', qos)
 
-        self.timer_callback_group_1 = MutuallyExclusiveCallbackGroup()
-        
         self.dir = -1
         self.vel_forward= 0.2
         self.vel_back= -0.2
 
-        self.loop_count = 0
-        self.dt = 0.01  # loop @100Hz
-        self.timer = self.create_timer(self.dt, self.timer_callback, callback_group=self.timer_callback_group_1)
+        # Send the first command after 10 ms, then alternate every two seconds.
+        self.timer = self.create_timer(0.01, self.timer_callback)
         
         # signal.signal(signal.SIGINT, self.usr_exit)
 
     def timer_callback(self):
+        if self.timer.timer_period_ns != 2_000_000_000:
+            self.timer.timer_period_ns = 2_000_000_000
+            self.timer.reset()
         
         msg = bxiMsg.MotionCommands()
         
         msg.vel_des.y = 0.
         msg.yawdot_des = 0.
         
-        if self.loop_count % 200 == 0:
-            if self.dir == 1:
-                msg.vel_des.x = self.vel_forward
-            else:
-                msg.vel_des.x = self.vel_back
-                
-            self.dir *= -1
-            
-            self.joy_pub.publish(msg)
-            
-            print("vel: ", msg.vel_des)
-        
-        
-        self.loop_count += 1
+        msg.vel_des.x = self.vel_forward if self.dir == 1 else self.vel_back
+        self.dir *= -1
+        self.joy_pub.publish(msg)
+        print("vel: ", msg.vel_des)
     
     def usr_exit(self):
         msg = bxiMsg.MotionCommands()
@@ -83,7 +72,7 @@ def main(args=None):
     rclpy.init(args=args)
     node = BxiExample()
     
-    executor = MultiThreadedExecutor(num_threads=3)
+    executor = SingleThreadedExecutor()
     executor.add_node(node)
     
     try:

@@ -11,7 +11,9 @@ from numpy.typing import NDArray
 
 from .base import BackendAvailability, BackendFactory, InferenceBackend, TensorMap
 from .rknn_builder import prepare_rknn_artifact
-from ..model import ModelArtifact, ModelSpec, RknnArtifact, _read_onnx_description
+from ..model import (
+    ModelArtifact, ModelSpec, RknnArtifact, _load_onnx_for_inspection, _read_onnx_description,
+)
 
 
 def _rockchip_compatible() -> str:
@@ -64,7 +66,7 @@ class RknnBackend(InferenceBackend):
             or any(name not in self._output_shapes for name in self.output_names)
         ) and (artifact.source_onnx is not None):
             metadata, input_shapes, output_shapes = _read_onnx_description(
-                Path(artifact.source_onnx)
+                _load_onnx_for_inspection(Path(artifact.source_onnx))
             )
             for name, value in metadata:
                 self._metadata.setdefault(name, value)

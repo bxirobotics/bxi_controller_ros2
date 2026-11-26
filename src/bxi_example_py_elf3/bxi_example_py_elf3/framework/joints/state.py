@@ -8,6 +8,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .layout import JointLayout
+from .mapping import CompiledJointMap
 
 
 FloatArray = NDArray[np.floating]
@@ -57,20 +58,34 @@ class JointStateBuffer:
         velocity: object,
         *,
         timestamp_ns: int = 0,
+        mapping: CompiledJointMap | None = None,
     ) -> JointStateView:
         position_array = np.asarray(position)
         velocity_array = np.asarray(velocity)
-        expected = (self.layout.dof_num,)
+        if mapping is not None and mapping.target is not self.layout and mapping.target != self.layout:
+            raise ValueError("joint map target does not match state layout")
+        expected = (self.layout.dof_num if mapping is None else mapping.source.dof_num,)
         if position_array.shape != expected or velocity_array.shape != expected:
             raise ValueError(
                 "joint state update shapes do not match layout: "
                 f"position={position_array.shape}, velocity={velocity_array.shape}, "
                 f"expected={expected}"
             )
-        np.copyto(self.position, position_array, casting="same_kind")
-        np.copyto(self.velocity, velocity_array, casting="same_kind")
-        self.view.timestamp_ns = int(timestamp_ns)
+        stamp = int(timestamp_ns)
+        # Finish all conversions before changing either field of the live view.
+        dtype = self.position.dtype
+        if position_array.dtype != dtype:
+            position_array = position_array.astype(dtype, casting="same_kind", copy=False)
+        if velocity_array.dtype != dtype:
+            velocity_array = velocity_array.astype(dtype, casting="same_kind", copy=False)
+        if mapping is None or mapping.is_identity:
+            self.position[:] = position_array
+            self.velocity[:] = velocity_array
+        else:
+            mapping.map_into(position_array, self.position)
+            mapping.map_into(velocity_array, self.velocity)
+        self.view.timestamp_ns = stamp
         return self.view
 
 
-__all__ = ["FloatArray", "JointStateBuffer", "JointStateView"]
+__all__ = ["JointStateBuffer", "JointStateView"]

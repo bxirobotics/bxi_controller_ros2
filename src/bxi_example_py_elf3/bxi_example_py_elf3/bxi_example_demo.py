@@ -24,15 +24,10 @@ import os
 from collections import deque
 from pathlib import Path
 from std_msgs.msg import String
-from geometry_msgs.msg import Pose
-from sensor_msgs.msg import JointState
 from ament_index_python.packages import get_package_share_directory
 
 from bxi_example_py_elf3.framework.runtime.state_machine import load_state_machine_config
 from bxi_example_py_elf3.framework.joints import (
-    JointCommandDefaults,
-    JointDefault,
-    JointLayout,
     JointStateBuffer,
     NamedJointCommandOverride,
 )
@@ -46,58 +41,13 @@ from bxi_example_py_elf3.framework.platform import (
     RobotObservation,
 )
 
-robot_name = "elf3"
-
-ELF3_RESET_JOINTS = JointLayout(
-    (
-        "waist_y_joint",
-        "waist_x_joint",
-        "waist_z_joint",
-        "l_hip_y_joint",
-        "l_hip_x_joint",
-        "l_hip_z_joint",
-        "l_knee_y_joint",
-        "l_ankle_y_joint",
-        "l_ankle_x_joint",
-        "r_hip_y_joint",
-        "r_hip_x_joint",
-        "r_hip_z_joint",
-        "r_knee_y_joint",
-        "r_ankle_y_joint",
-        "r_ankle_x_joint",
-        "l_shoulder_y_joint",
-        "l_shoulder_x_joint",
-        "l_shoulder_z_joint",
-        "l_elbow_y_joint",
-        "l_wrist_x_joint",
-        "l_wrist_y_joint",
-        "l_wrist_z_joint",
-        "r_shoulder_y_joint",
-        "r_shoulder_x_joint",
-        "r_shoulder_z_joint",
-        "r_elbow_y_joint",
-        "r_wrist_x_joint",
-        "r_wrist_y_joint",
-        "r_wrist_z_joint",
-        "head_z_joint",
-        "head_y_joint",
-    ),
-    label="ELF3 simulation reset",
+from bxi_example_py_elf3.elf3.model import ELF3_COMMAND_DEFAULTS, ELF3_RESET_JOINTS, ROBOT_NAME as robot_name
+from bxi_example_py_elf3.elf3.ros_messages import (
+    motor_command, robot_reset_request, simulation_reset_request,
 )
 
 dof_num = ELF3_RESET_JOINTS.dof_num
 joint_name = ELF3_RESET_JOINTS.names
-
-# The current ELF3 state message contains two head joints that the original
-# 29-joint policies do not command. A future 31-joint policy overrides these
-# values naturally because defaults are only applied to omitted joints. Name
-# lookup is compiled once; the control-cycle path performs no dictionary lookup.
-ELF3_COMMAND_DEFAULTS = JointCommandDefaults(
-    {
-        "head_y_joint": JointDefault(position=0.0, kp=16.747, kd=1.066),
-        "head_z_joint": JointDefault(position=0.0, kp=16.747, kd=1.066),
-    }
-)
 
 
 class BxiExample(Node):
@@ -124,14 +74,11 @@ class BxiExample(Node):
         self.init_pub_sub()
 
         # 机器人状态变量(robot states)
-        self.omega = np.zeros(3, dtype=np.double)
-        self.linear_acceleration = np.zeros(3, dtype=np.double)
-        self.quat_xyzw = np.zeros(4, dtype=np.double)
-        self.quat_wxyz = np.zeros(4, dtype=np.double)
+        # Immutable callback sample, ordered as orientation (xyzw), gyro, acceleration.
+        self._imu_sample = ((0.0,) * 4, (0.0,) * 3, (0.0,) * 3)
         self._imu_received = False
         self._imu_last_received_at = None
         self._imu_protection_latched = False
-        self._imu_first_received_logged = False
         self._imu_invalid_frame_count = 0
         self._next_imu_invalid_warning = 0.0
         self._imu_stamp_observer = ImuStampObserver()
@@ -409,10 +356,7 @@ class BxiExample(Node):
                 latest_joints.velocity,
                 timestamp_ns=latest_joints.timestamp_ns,
             )
-            np.copyto(self._quat_xyzw_snapshot, self.quat_xyzw)
-            np.copyto(self._quat_wxyz_snapshot, self.quat_wxyz)
-            np.copyto(self._omega_snapshot, self.omega)
-            np.copyto(self._linear_acceleration_snapshot, self.linear_acceleration)
+            quat, gyro, acceleration = self._imu_sample
             np.copyto(self._cmd_snapshot, self.raw_cmd_vel)
             events = (
                 ()
@@ -420,6 +364,10 @@ class BxiExample(Node):
                 else tuple(self.pending_remote_events)
             )
             self.pending_remote_events.clear()
+        self._quat_xyzw_snapshot[:] = quat
+        self._quat_wxyz_snapshot[:] = quat[3], quat[0], quat[1], quat[2]
+        self._omega_snapshot[:] = gyro
+        self._linear_acceleration_snapshot[:] = acceleration
         assert self._observation is not None
         return self._observation, events
 
@@ -505,15 +453,7 @@ class BxiExample(Node):
             permitted=override_permitted,
         )
 
-        msg = bxiMsg.ActuatorCmds()
-        msg.header.frame_id = robot_name
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.actuators_name = frame.layout.names
-        msg.pos = frame.qpos.tolist()
-        msg.vel = frame.vel.tolist()
-        msg.torque = frame.torque.tolist()
-        msg.kp = frame.kp.tolist()
-        msg.kd = frame.kd.tolist()
+        msg = motor_command(frame, self.get_clock().now().to_msg())
         if not self._shutting_down.is_set() and self.context.ok():
             self.act_pub.publish(msg)
 
@@ -549,10 +489,7 @@ class BxiExample(Node):
         self.state_machine_info_pub.publish(msg)
 
     def robot_reset(self, reset_step, release):
-        req = bxiSrv.RobotReset.Request()
-        req.reset_step = reset_step
-        req.release = release
-        req.header.frame_id = robot_name
+        req = robot_reset_request(reset_step, release)
 
         while not self.rest_srv.wait_for_service(timeout_sec=0.2):
             if self._shutting_down.is_set() or not rclpy.ok():
@@ -563,26 +500,7 @@ class BxiExample(Node):
         return True
 
     def sim_robot_reset(self):
-        req = bxiSrv.SimulationReset.Request()
-        req.header.frame_id = robot_name
-
-        base_pose = Pose()
-        base_pose.position.x = 0.0
-        base_pose.position.y = 0.0
-        base_pose.position.z = 1.0
-        base_pose.orientation.x = 0.0
-        base_pose.orientation.y = 0.0
-        base_pose.orientation.z = 0.0
-        base_pose.orientation.w = 1.0
-
-        joint_state = JointState()
-        joint_state.name = joint_name
-        joint_state.position = np.zeros(dof_num, dtype=np.float32).tolist()
-        joint_state.velocity = np.zeros(dof_num, dtype=np.float32).tolist()
-        joint_state.effort = np.zeros(dof_num, dtype=np.float32).tolist()
-
-        req.base_pose = base_pose
-        req.joint_state = joint_state
+        req = simulation_reset_request(ELF3_RESET_JOINTS)
 
         while not self.sim_rest_srv.wait_for_service(timeout_sec=1.0):
             print("service not available, waiting again...")
@@ -710,24 +628,15 @@ class BxiExample(Node):
         quat = msg.orientation
         avel = msg.angular_velocity
         acceleration = msg.linear_acceleration
-        quaternion_norm = math.sqrt(
-            quat.w * quat.w + quat.x * quat.x + quat.y * quat.y + quat.z * quat.z
-        )
-        quaternion_valid = all(
-            math.isfinite(value) for value in (quat.w, quat.x, quat.y, quat.z)
-        ) and 0.9 <= quaternion_norm <= 1.1
-        vectors_valid = all(
-            math.isfinite(value)
-            for value in (
-                avel.x,
-                avel.y,
-                avel.z,
-                acceleration.x,
-                acceleration.y,
-                acceleration.z,
-            )
-        )
-        if not quaternion_valid or not vectors_valid:
+        x, y, z, w = quat.x, quat.y, quat.z, quat.w
+        gyro = (avel.x, avel.y, avel.z)
+        accel = (acceleration.x, acceleration.y, acceleration.z)
+        quaternion_norm = math.sqrt(w * w + x * x + y * y + z * z)
+        if not (
+            0.9 <= quaternion_norm <= 1.1
+            and all(map(math.isfinite, gyro))
+            and all(map(math.isfinite, accel))
+        ):
             self._imu_diagnostics.rejected()
             now = time.monotonic()
             with self.lock_in:
@@ -748,19 +657,14 @@ class BxiExample(Node):
         lock_started_ns = time.monotonic_ns()
         with self.lock_in:
             lock_wait_ns = time.monotonic_ns() - lock_started_ns
-            self._imu_diagnostics.phase("imu", "update")
-            self.quat_xyzw[:] = quat.x, quat.y, quat.z, quat.w
-            self.quat_wxyz[:] = quat.w, quat.x, quat.y, quat.z
-            self.omega[:] = avel.x, avel.y, avel.z
-            self.linear_acceleration[:] = acceleration.x, acceleration.y, acceleration.z
+            self._imu_sample = ((x, y, z, w), gyro, accel)
+            first_frame = not self._imu_received
             self._imu_received = True
             self._imu_last_received_at = time.monotonic()
-            self._imu_diagnostics.accepted(lock_wait_ns)
-            if not self._imu_first_received_logged:
-                self._imu_first_received_logged = True
-                self.get_logger().info(
-                    f"received first IMU frame on {self.topic_prefix}imu_data"
-                )
+        self._imu_diagnostics.phase("imu", "updated")
+        self._imu_diagnostics.accepted(lock_wait_ns)
+        if first_frame:
+            self.get_logger().info(f"received first IMU frame on {self.topic_prefix}imu_data")
 
     def touch_callback(self, _msg):
         pass
