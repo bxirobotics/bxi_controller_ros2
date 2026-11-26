@@ -44,13 +44,6 @@ for command_name in sudo timeout systemctl wget tar grep sed udevadm flock chmod
     type -P "$command_name" >/dev/null || { echo "missing command: $command_name" >&2; exit 1; }
 done
 [[ -f /opt/bxi/bxi_ros2_pkg/setup.bash ]] || { echo 'missing bxi_ros2_pkg/setup.bash' >&2; exit 1; }
-short_hostname="$(hostname)"
-short_hostname="${short_hostname%%.*}"
-[[ "$short_hostname" =~ ([0-9]+)$ ]] || { echo "hostname lacks numeric suffix: $short_hostname" >&2; exit 1; }
-device_id="${BASH_REMATCH[1]}"
-((${#device_id} <= 3)) || { echo "device id out of range: $device_id" >&2; exit 1; }
-# shortcut: Domain ID 每232个编号复用，跨机通信需另行隔离或分配。
-domain=$(((10#$device_id + 29) % 232 + 1))
 
 sudo -v
 mkdir -p "$workspace" /home/bxi/.cache/bxi-build/deploy /home/bxi/bxi_archive
@@ -61,12 +54,8 @@ download_source() {
         tar -xzf "$stage/source.tar.gz" -C "$stage"
 }
 if ! download_source; then
-    echo "source download failed; removing $project and retrying once" >&2
-    if systemctl cat "$service" >/dev/null 2>&1; then
-        sudo timeout 20s systemctl stop "$service"
-        sudo systemctl disable "$service"
-    fi
-    sudo rm -rf -- "$project" "$candidate"
+    echo 'source download failed; retrying once without replacing the current project' >&2
+    rm -rf -- "$candidate"
     download_source
 fi
 for name in build.sh script/ros_elf_launch.service script/udev/70-bxi-{bat,imu,remote}.rules script/bxi-battle-dragon-link script/bxi-imu-link script/bxi-imu-link.service; do
@@ -78,10 +67,11 @@ for name in deploy_autostart.sh deploy_device_links.sh generate_ros_config.sh ge
     [[ -f "$scripts/$name" ]] || { echo "missing $scripts/$name" >&2; exit 1; }
     bash -n "$scripts/$name"
 done
+source "$scripts/generate_ros_config.sh"
 robot_config=/opt/bxi/robot_config.yaml
 BXI_ROBOT_CONFIG_FILE="$stage/robot_config.yaml" bash "$scripts/generate_robot_config.sh"
 bash -n "$candidate/build.sh"
-bash "$scripts/generate_ros_config.sh" "$candidate/script/ros_elf_launch.service" "$domain" > "$stage/ros-elf-preflight.service"
+generate_ros_config > "$stage/ros-elf-preflight.service"
 SYSTEMD_UNIT_PATH=/usr/lib/systemd/system:/lib/systemd/system systemd-analyze --generators=no verify "$stage/ros-elf-preflight.service"
 
 backup="$(mktemp -d /home/bxi/bxi_archive/pre-deploy.XXXXXX)"

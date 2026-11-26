@@ -13,14 +13,9 @@ trap '
 [[ $# -le 1 && "${1-0}" =~ ^[01]$ ]] || { echo 'usage: generate_robot_config.sh [0|1]' >&2; exit 1; }
 head_enabled=false
 [[ "${1-0}" == 0 ]] || head_enabled=true
-host_name="$(hostname)"
-[[ "$host_name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo 'invalid hostname' >&2; exit 1; }
-short_hostname="${host_name%%.*}"
-[[ "$short_hostname" =~ ([0-9]+)$ ]] || { echo "hostname lacks numeric suffix: $host_name" >&2; exit 1; }
-device_id="${BASH_REMATCH[1]}"
-((${#device_id} <= 3)) || { echo "device id out of range: $device_id" >&2; exit 1; }
-# shortcut: Domain ID 每232个编号复用，跨机通信需另行隔离或分配。
-domain=$(((10#$device_id + 29) % 232 + 1))
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+source "$script_dir/generate_ros_config.sh"
+load_ros_identity
 generated_at="$(date --iso-8601=seconds)"
 output="${BXI_ROBOT_CONFIG_FILE:-/opt/bxi/robot_config.yaml}"
 output_dir="$(dirname -- "$output")"
