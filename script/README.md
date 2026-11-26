@@ -6,7 +6,7 @@
 | `test_pro.sh` | 无参数下载并部署测试版源码包。 |
 | `download_imu_tool.sh` | 按 Linux x86_64／ARM64 下载 IMU 配置工具，校验 ELF 架构后保存为 `imu-tool`。 |
 | `generate_robot_config.sh` | 生成机器人配置；默认无头，参数 `1` 为有头，覆盖 `/opt/bxi/robot_config.yaml`。 |
-| `generate_ros_config.sh` | 根据 service 模板和 ROS domain 生成服务配置，输出到标准输出。 |
+| `generate_ros_config.sh` | 无参数按主机名计算 domain，读取同目录模板并输出服务配置；集中提供编号解析和计算逻辑。 |
 | `deploy_device_links.sh` | 安装设备规则和链接助手，备份移出旧规则、重载 udev 并启用 IMU 开机扫描。 |
 | `deploy_autostart.sh` | 备份并替换旧服务配置，安装、启用并重启 ROS 服务。 |
 | `ros_elf_launch.service` | ROS 遥控器开机自启动的 systemd 服务模板。 |
@@ -25,11 +25,18 @@ cd script
 ./deploy_autostart.sh
 ```
 
-所有入口、机器人 YAML 和自启动服务统一按 `(设备编号 + 29) % 232 + 1` 计算 ROS domain，
-在 `1～232` 循环，例如 `124→154`、`202→232`、`203→1`、`233→31`、`255→53`。
-显式生成 service 时同样拒绝 domain 0。
-原来可用的编号映射不变，仍只接受最多三位数字的设备编号，无编号或超长时退出。
-每隔 232 个编号会复用 domain；默认 CycloneDDS 仅使用 `lo`，跨机通信时需另行隔离或分配。
+Domain规则只定义在 `generate_ros_config.sh`，机器人YAML生成器通过 `source` 复用其 `load_ros_identity`，部署入口下载源码包后复用其 `generate_ros_config`；自启动模块无参数执行它。统一按 `(设备编号 + 201) % 202 + 31` 计算 ROS domain，
+在 `31～232` 循环，例如 `01→31`、`05→35`、`124→154`、`202→232`、`203→31`、`255→83`。
+`generate_ros_config.sh` 不接受参数，模板固定为同目录 `ros_elf_launch.service`，输出到标准输出；不安装或启动服务。
+编号 `1～202` 的映射不变，仍只接受最多三位数字的设备编号，无编号或超长时退出；编号 `0`（含 `000`）映射到232。
+每隔 202 个编号会复用 domain；默认 CycloneDDS 仅使用 `lo`，跨机通信时需另行隔离或分配。
+下载失败只清理暂存工程并重试一次，第二次仍失败则退出，保留现有工程和服务。主机名和配置预检在下载后、备份替换前完成。
+
+```bash
+# 从任何目录运行，按当前主机名生成服务配置
+bash /path/to/script/generate_ros_config.sh > /tmp/ros_elf_launch.service
+```
+
 usr/test 内部通过
 `BXI_AUTOSTART_MODE=prepare/start` 分别在构建前安装 unit、构建后启动服务。
 usr/test沿用旧入口的内置密码自动完成sudo验证，并将提权函数传给子Bash脚本，
