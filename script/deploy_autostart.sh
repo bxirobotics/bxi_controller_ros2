@@ -12,14 +12,6 @@ trap '
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 (($# == 0)) || { echo "usage: deploy_autostart.sh (no arguments)" >&2; exit 2; }
-template="$script_dir/ros_elf_launch.service"
-short_hostname="$(hostname)"
-short_hostname="${short_hostname%%.*}"
-[[ "$short_hostname" =~ ([0-9]+)$ ]] || { echo "hostname lacks numeric suffix: $short_hostname" >&2; exit 1; }
-device_id="${BASH_REMATCH[1]}"
-((${#device_id} <= 3)) || { echo "device id out of range: $device_id" >&2; exit 1; }
-# shortcut: Domain ID 每232个编号复用，跨机通信需另行隔离或分配。
-domain=$(((10#$device_id + 29) % 232 + 1))
 service=ros_elf_launch.service
 mode="${BXI_AUTOSTART_MODE:-deploy}"
 [[ "$mode" =~ ^(deploy|prepare|start)$ ]] || { echo 'mode must be deploy, prepare or start' >&2; exit 1; }
@@ -27,7 +19,7 @@ mode="${BXI_AUTOSTART_MODE:-deploy}"
 if [[ "$mode" != start ]]; then
     config="$(mktemp --suffix=.service)"
 
-    bash "$script_dir/generate_ros_config.sh" "$template" "$domain" > "$config"
+    bash "$script_dir/generate_ros_config.sh" > "$config"
     SYSTEMD_UNIT_PATH=/usr/lib/systemd/system:/lib/systemd/system systemd-analyze --generators=no verify "$config"
     sudo -v
     backup="$(sudo mktemp -d /var/backups/ros-elf-launch.XXXXXX)"
