@@ -67,11 +67,24 @@ for name in deploy_autostart.sh deploy_device_links.sh generate_ros_config.sh ge
     [[ -f "$scripts/$name" ]] || { echo "missing $scripts/$name" >&2; exit 1; }
     bash -n "$scripts/$name"
 done
-source "$scripts/generate_ros_config.sh"
 robot_config=/opt/bxi/robot_config.yaml
 BXI_ROBOT_CONFIG_FILE="$stage/robot_config.yaml" bash "$scripts/generate_robot_config.sh"
 bash -n "$candidate/build.sh"
-generate_ros_config > "$stage/ros-elf-preflight.service"
+# 从包内生成的YAML取Domain，避免新版入口加载旧生成器时因缺参退出。
+domain="$(awk '$1 == "ros_domain_id:" { print $2 }' "$stage/robot_config.yaml")"
+[[ "$domain" =~ ^[0-9]{1,3}$ ]] && ((10#$domain >= 1 && 10#$domain <= 232)) || {
+    echo "invalid generated ROS_DOMAIN_ID: $domain" >&2
+    exit 1
+}
+if grep -q '^generate_ros_config()' "$scripts/generate_ros_config.sh"; then
+    bash "$scripts/generate_ros_config.sh" > "$stage/ros-elf-preflight.service"
+else
+    bash "$scripts/generate_ros_config.sh" "$scripts/ros_elf_launch.service" "$domain" > "$stage/ros-elf-preflight.service"
+fi
+grep -qx "Environment=ROS_DOMAIN_ID=$domain" "$stage/ros-elf-preflight.service" || {
+    echo 'robot config and service ROS_DOMAIN_ID differ' >&2
+    exit 1
+}
 SYSTEMD_UNIT_PATH=/usr/lib/systemd/system:/lib/systemd/system systemd-analyze --generators=no verify "$stage/ros-elf-preflight.service"
 
 backup="$(mktemp -d /home/bxi/bxi_archive/pre-deploy.XXXXXX)"
